@@ -1,0 +1,18 @@
+[workspace]
+resolver = "2"
+members = ["shared", "server", "client"]
+
+[workspace.dependencies]
+bevy = { version = "0.17", features = ["vorbis"] }
+lightyear = { version = "0.25", features = ["udp", "netcode"] }
+serde = { version = "1.0", features = ["derive"] }
+bevy_rapier3d = "0.32"
+noise = "0.9"
+rand = "0.8"
+
+# Faster compile times during development
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3

@@ -1,0 +1,249 @@
+//! Game Client - Renders the world and handles player input
+//!
+//! Updated for Lightyear 0.25 / Bevy 0.17
+
+mod audio;
+mod camera;
+mod crosshair;
+mod input;
+mod props;
+mod states;
+mod systems;
+mod terrain;
+mod ui;
+mod weapons;
+mod weapon_view;
+
+use bevy::prelude::*;
+use bevy::asset::AssetPlugin;
+use bevy::diagnostic::FrameTimeDiagnosticsPlugin;
+use bevy::window::WindowResolution;
+use lightyear::prelude::client::ClientPlugins;
+use shared::{protocol::*, weapons::WeaponDebugMode, ProtocolPlugin, SERVER_ADDR, SERVER_PORT};
+use states::GameState;
+
+/// Marker component for our client entity
+#[derive(Component)]
+pub struct GameClient;
+
+/// Get the asset path - for bundled macOS apps, use path relative to executable
+fn get_asset_path() -> String {
+    // Try to find assets relative to executable (for .app bundles)
+    if let Ok(exe_path) = std::env::current_exe() {
+        if let Some(exe_dir) = exe_path.parent() {
+            let bundled_assets = exe_dir.join("assets");
+            if bundled_assets.exists() {
+                info!("Using bundled assets at: {:?}", bundled_assets);
+                return bundled_assets.to_string_lossy().to_string();
+            }
+        }
+    }
+    // Fall back to default "assets" folder (for development)
+    "assets".to_string()
+}
+
+fn main() {
+    let asset_path = get_asset_path();
+    
+    let mut app = App::new();
+
+    // Full Bevy with rendering - configure asset path for bundled apps
+    app.add_plugins(DefaultPlugins
+        .set(WindowPlugin {
+            primary_window: Some(Window {
+                title: "Sandbox Game".to_string(),
+                resolution: WindowResolution::new(1280, 720),
+                ..default()
+            }),
+            ..default()
+        })
+        .set(AssetPlugin {
+            file_path: asset_path,
+            ..default()
+        })
+    );
+    
+    // FPS diagnostics for debug overlay
+    app.add_plugins(FrameTimeDiagnosticsPlugin::default());
+
+    // Game state machine
+    app.init_state::<GameState>();
+
+    // Lightyear client plugins (tick_duration = 60Hz)
+    // In Lightyear 0.25, we just add the plugins with tick duration
+    app.add_plugins(ClientPlugins {
+        tick_duration: tick_duration(),
+    });
+    app.add_plugins(ProtocolPlugin);
+
+    // Terrain generation and rendering
+    app.add_plugins(terrain::TerrainPlugin);
+    
+    // Environmental props (rocks, trees, etc.)
+    app.add_plugins(props::PropsPlugin);
+
+    // UI plugins
+    app.add_plugins(ui::MainMenuPlugin);
+    app.add_plugins(ui::PauseMenuPlugin);
+    
+    // Audio plugin
+    app.add_plugins(audio::GameAudioPlugin);
+
+    // Setup systems (run once at startup - rendering only)
+    app.add_systems(Startup, (
+        systems::setup_rendering,
+        systems::setup_particle_assets,
+        systems::setup_player_character_assets,
+        systems::setup_npc_assets,
+    ));
+    
+    // Weapon debug mode resource
+    app.init_resource::<WeaponDebugMode>();
+    app.init_resource::<weapons::ShootingState>();
+    app.init_resource::<weapons::DebugBulletTrails>();
+    app.init_resource::<weapon_view::CurrentWeaponView>();
+
+    // Ensure we clean up visuals when entering menu
+    app.add_systems(OnEnter(GameState::MainMenu), systems::enter_main_menu);
+
+    // Connection systems
+    app.add_systems(OnEnter(GameState::Connecting), systems::start_connection);
+    app.add_systems(
+        Update,
+        systems::check_connection.run_if(in_state(GameState::Connecting)),
+    );
+
+    // Spawn world visuals, HUD, and crosshair when entering gameplay
+    app.add_systems(OnEnter(GameState::Playing), (
+        systems::spawn_world,
+        crosshair::spawn_crosshair,
+        weapon_view::spawn_weapon_hud,
+        weapons::spawn_debug_overlay,
+    ));
+    
+    // Cleanup HUD and crosshair when leaving gameplay
+    app.add_systems(OnExit(GameState::Playing), (
+        crosshair::despawn_crosshair,
+        weapon_view::despawn_weapon_hud,
+        weapons::despawn_debug_overlay,
+    ));
+
+    // Send input to server at fixed tick rate (60 Hz)
+    app.add_systems(
+        FixedUpdate,
+        input::send_input_to_server
+            .run_if(in_state(GameState::Playing).or(in_state(GameState::Paused))),
+    );
+
+    // Gameplay systems (only when playing) - split into groups to avoid tuple limit
+    // ORDER MATTERS (and we enforce it): vehicles -> players (attach to vehicles) -> camera.
+    app.add_systems(
+        Update,
+        (
+            input::handle_keyboard_input,
+            input::update_vehicle_state,
+            input::handle_mouse_input,
+            systems::handle_player_spawned,
+            systems::handle_npc_spawned,
+            systems::handle_vehicle_spawned,
+            systems::grab_cursor,
+            // Hard-chain the render pose pipeline so we never read a stale vehicle transform.
+            (
+                systems::sync_vehicle_transforms,
+                systems::sync_player_transforms,
+                systems::sync_npc_transforms,
+                camera::update_camera,
+            )
+                .chain(),
+            camera::update_camera_fov,
+            systems::spawn_sand_particles,
+            systems::update_sand_particles,
+            systems::update_day_night_cycle,
+        )
+            .run_if(in_state(GameState::Playing)),
+    );
+
+    // Player character visuals/animation (KayKit Ranger)
+    app.add_systems(
+        Update,
+        (systems::setup_ranger_rig, systems::update_ranger_animation)
+            .run_if(in_state(GameState::Playing)),
+    );
+
+    // NPC visuals/animation + debug hitboxes
+    app.add_systems(
+        Update,
+        (
+            systems::setup_npc_rig,
+            systems::update_npc_animation,
+            systems::debug_draw_npc_hitboxes,
+        )
+            .run_if(in_state(GameState::Playing)),
+    );
+    
+    // Weapon and UI systems (only when playing) - split into smaller groups
+    app.add_systems(
+        Update,
+        (
+            crosshair::update_crosshair_visibility,
+            crosshair::update_crosshair_ads,
+            crosshair::update_hit_markers,
+        )
+            .run_if(in_state(GameState::Playing)),
+    );
+    
+    app.add_systems(
+        Update,
+        (
+            weapons::handle_shoot_input,
+            weapons::handle_reload_input,
+            weapons::handle_bullet_spawned,
+        )
+            .run_if(in_state(GameState::Playing)),
+    );
+    
+    app.add_systems(
+        Update,
+        (
+            weapons::update_bullet_visuals,
+            weapons::update_local_tracers,
+            weapons::handle_bullet_impacts,
+        )
+            .run_if(in_state(GameState::Playing)),
+    );
+    
+    app.add_systems(
+        Update,
+        (
+            weapons::update_impact_markers,
+            weapons::handle_hit_confirms,
+            weapons::toggle_debug_mode,
+            weapons::debug_draw_trajectories,
+            weapons::update_debug_overlay,
+        )
+            .run_if(in_state(GameState::Playing)),
+    );
+    
+    // Weapon view systems (3D models and HUD)
+    app.add_systems(
+        Update,
+        (
+            weapon_view::handle_weapon_switch,
+            weapon_view::update_weapon_hud,
+            weapon_view::update_first_person_weapon,
+            weapon_view::animate_weapon,
+        )
+            .run_if(in_state(GameState::Playing)),
+    );
+
+    // Input resource
+    app.init_resource::<input::InputState>();
+
+    // Generate a unique client ID for logging
+    let client_id = rand::random::<u64>();
+    info!(
+        "Starting client, server at {}:{}, client_id: {}",
+        SERVER_ADDR, SERVER_PORT, client_id
+    );
+    app.run();
+}
