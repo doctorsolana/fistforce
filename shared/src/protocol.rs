@@ -240,10 +240,15 @@ pub const SERVER_ADDR: &str = "127.0.0.1";
 pub const PROTOCOL_ID: u64 = 0x1234567890ABCDEF;
 
 /// Get the address the server should bind to.
-/// Server bind address - 0.0.0.0 works for both local and Fly.io deployments.
-/// Fly.io's proxy handles UDP routing automatically.
+///
+/// On Fly.io, UDP services should bind to `fly-global-services` for correct routing.
+/// Locally, bind to `0.0.0.0`.
 pub fn get_server_bind_addr() -> &'static str {
-    "0.0.0.0"
+    if std::env::var("FLY_APP_NAME").is_ok() {
+        "fly-global-services"
+    } else {
+        "0.0.0.0"
+    }
 }
 
 /// Shared private key for local development (use proper key management in production!)

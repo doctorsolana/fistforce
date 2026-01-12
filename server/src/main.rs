@@ -18,7 +18,7 @@ use shared::{
     Vehicle, VehicleType, VehicleState, VehicleDriver,
     PRIVATE_KEY, PROTOCOL_ID, SERVER_PORT, get_server_bind_addr,
 };
-use std::net::SocketAddr;
+use std::net::{SocketAddr, ToSocketAddrs};
 
 use systems::ClientInputs;
 
@@ -33,8 +33,11 @@ struct VehiclesSpawned;
 /// Spawn the server entity with all required networking components
 fn spawn_server(mut commands: Commands) {
     let bind_addr = get_server_bind_addr();
-    let server_addr: SocketAddr = format!("{}:{}", bind_addr, SERVER_PORT)
-        .parse()
+    // `fly-global-services` is a hostname on Fly.io, so we must resolve it instead of `parse()`.
+    let server_addr: SocketAddr = (bind_addr, SERVER_PORT)
+        .to_socket_addrs()
+        .ok()
+        .and_then(|mut it| it.next())
         .expect("Invalid server bind address");
     
     info!("Spawning server entity, binding to {:?} (fly.io: {})", 
