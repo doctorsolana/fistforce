@@ -144,14 +144,24 @@ struct DropdownOption {
 
 /// Load server presets synchronously (called during plugin build)
 fn load_server_presets_sync() -> (ServerPresets, ServerAddress) {
-    let path = "client/assets/servers.ron";
-    
-    let config: Option<ServerConfig> = std::fs::read_to_string(path)
-        .ok()
-        .and_then(|contents| ron::from_str(&contents).ok());
+    // In dev, assets live under `client/assets/`.
+    // In packaged builds (e.g. macOS .app), assets are bundled as `assets/` next to the executable.
+    let candidates = ["assets/servers.ron", "client/assets/servers.ron"];
+
+    let (path, contents) = candidates
+        .iter()
+        .find_map(|p| std::fs::read_to_string(p).ok().map(|c| (*p, c)));
+
+    let config: Option<ServerConfig> = contents
+        .as_ref()
+        .and_then(|c| ron::from_str(c).ok());
     
     if let Some(config) = config {
-        info!("Loaded {} server presets from servers.ron", config.servers.len());
+        info!(
+            "Loaded {} server presets from {}",
+            config.servers.len(),
+            path.unwrap_or("<unknown>")
+        );
         
         // Set default server address from config
         let ip = config.servers.get(config.default_index)
@@ -169,7 +179,10 @@ fn load_server_presets_sync() -> (ServerPresets, ServerAddress) {
             },
         )
     } else {
-        warn!("Could not load servers.ron, using defaults");
+        warn!(
+            "Could not load servers.ron (tried {:?}), using defaults",
+            candidates
+        );
         (ServerPresets::default(), ServerAddress::default())
     }
 }
