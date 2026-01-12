@@ -3,6 +3,9 @@ target/
 
 # Ignore client (not needed for server deployment)
 client/
+# But keep colliders.bin (server needs it)
+!client/assets/
+!client/assets/colliders.bin
 
 # Ignore tools
 tools/
