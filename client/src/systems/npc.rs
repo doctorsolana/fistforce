@@ -87,6 +87,10 @@ pub struct NeedsNpcRigSetup;
 #[derive(Component)]
 pub struct NpcAnimationRoot;
 
+/// The NPC entity that owns this rig (cached to avoid per-frame hierarchy walks).
+#[derive(Component, Clone, Copy)]
+pub struct NpcRigOwner(pub Entity);
+
 #[derive(Component, Default)]
 pub struct NpcAnimState {
     pub walking: bool,
@@ -104,10 +108,13 @@ pub fn handle_npc_spawned(
     let Some(assets) = assets else { return };
 
     for (entity, npc, pos) in new_npcs.iter() {
-        // Ensure NPC entity has a Transform/Visibility for client-side rendering/sync.
+        // Ensure NPC entity has full spatial components for hierarchy propagation.
+        // Without GlobalTransform, children with GlobalTransform trigger B0004 warnings.
         commands.entity(entity).insert((
             Transform::from_translation(pos.0),
+            GlobalTransform::from_translation(pos.0),
             Visibility::Inherited,
+            InheritedVisibility::default(),
         ));
 
         let Some(scene) = assets.scenes.get(&npc.archetype).cloned() else {
@@ -124,6 +131,9 @@ pub fn handle_npc_spawned(
                 Transform::from_xyz(0.0, -NPC_HEIGHT * 0.5, 0.0)
                     .with_rotation(Quat::from_rotation_y(std::f32::consts::PI))
                     .with_scale(Vec3::splat(1.0)),
+                GlobalTransform::default(),
+                Visibility::Inherited,
+                InheritedVisibility::default(),
             ));
         });
     }
@@ -136,10 +146,16 @@ pub fn setup_npc_rig(
     model_roots: Query<Entity, (With<NpcModelRoot>, With<NeedsNpcRigSetup>)>,
     children_q: Query<&Children>,
     names_q: Query<&Name>,
+    parents_q: Query<&ChildOf>,
 ) {
     let Some(assets) = assets else { return };
 
     for model_root in model_roots.iter() {
+        // Cache the owning NPC entity (parent of NpcModelRoot).
+        let Ok(owner) = parents_q.get(model_root).map(|p| p.parent()) else {
+            continue;
+        };
+
         // Find the rig root node inside the spawned scene (named "Rig_Medium" in KayKit).
         let mut stack: Vec<Entity> = vec![model_root];
         let mut rig_root: Option<Entity> = None;
@@ -162,6 +178,7 @@ pub fn setup_npc_rig(
 
         commands.entity(rig_root).insert((
             NpcAnimationRoot,
+            NpcRigOwner(owner),
             NpcAnimState::default(),
             AnimationPlayer::default(),
             AnimationGraphHandle(assets.animation_graph.clone()),
@@ -224,30 +241,20 @@ pub fn sync_npc_transforms(
 pub fn update_npc_animation(
     assets: Option<Res<KayKitNpcAssets>>,
     time: Res<Time>,
-    parents: Query<&ChildOf>,
     npc_roots: Query<(&Npc, &Health, &Transform)>,
-    mut anim_roots: Query<(Entity, &mut NpcAnimState, &mut AnimationPlayer), With<NpcAnimationRoot>>,
+    mut anim_roots: Query<(&NpcRigOwner, &mut NpcAnimState, &mut AnimationPlayer), With<NpcAnimationRoot>>,
 ) {
     let Some(assets) = assets else { return };
 
     let dt = time.delta_secs().max(1e-6);
 
-    for (entity, mut state, mut player) in anim_roots.iter_mut() {
-        // Find owning NPC entity by walking up the hierarchy.
-        let mut cursor = entity;
-        let mut owner: Option<(Npc, f32, Vec3)> = None;
-        while let Ok(parent) = parents.get(cursor) {
-            let p = parent.parent();
-            if let Ok((npc, health, transform)) = npc_roots.get(p) {
-                owner = Some((npc.clone(), health.current, transform.translation));
-                break;
-            }
-            cursor = p;
-        }
-
-        let Some((_npc, health_current, npc_pos)) = owner else {
+    for (owner, mut state, mut player) in anim_roots.iter_mut() {
+        let Ok((_npc, health, transform)) = npc_roots.get(owner.0) else {
             continue;
         };
+
+        let health_current = health.current;
+        let npc_pos = transform.translation;
 
         let is_dead = health_current <= 0.0;
 

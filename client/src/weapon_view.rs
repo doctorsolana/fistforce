@@ -271,7 +271,10 @@ fn spawn_weapon_model(
     let weapon_entity = commands.spawn((
         FirstPersonWeapon,
         Transform::from_translation(base_offset),
-        Visibility::Visible,
+        // Explicit GlobalTransform avoids B0004 warnings when child meshes are spawned immediately.
+        GlobalTransform::default(),
+        Visibility::Inherited,
+        InheritedVisibility::default(),
     )).id();
     
     // Build weapon based on type

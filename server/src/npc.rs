@@ -22,7 +22,7 @@ use shared::{
 #[derive(Resource)]
 pub struct NpcsSpawned;
 
-/// Spawn a single NPC near the player spawn once the server is started.
+/// Spawn NPCs near the player spawn once the server is started.
 pub fn spawn_npcs_once(
     mut commands: Commands,
     terrain: Res<WorldTerrain>,
@@ -35,28 +35,32 @@ pub fn spawn_npcs_once(
     }
     commands.insert_resource(NpcsSpawned);
 
-    // Spawn close to player spawn (0,0) but offset slightly.
-    let x = 6.0;
-    let z = -4.0;
-    let y = terrain.generator.get_height(x, z) + ground_clearance_center();
-    let pos = Vec3::new(x, y, z);
+    // Spawn 3 NPCs at different positions around the player spawn
+    let spawn_positions = [
+        (6.0, -4.0),   // Original position
+        (-8.0, -6.0),  // Left side
+        (4.0, 10.0),   // Behind/south
+    ];
 
-    // Deterministic-ish id for now (single NPC).
-    let npc_id = 1_u64;
+    for (npc_id, (x, z)) in spawn_positions.iter().enumerate() {
+        let npc_id = (npc_id + 1) as u64;
+        let y = terrain.generator.get_height(*x, *z) + ground_clearance_center();
+        let pos = Vec3::new(*x, y, *z);
 
-    commands.spawn((
-        Npc {
-            id: npc_id,
-            archetype: NpcArchetype::Barbarian,
-        },
-        NpcPosition(pos),
-        NpcRotation(0.0),
-        Health::new(120.0),
-        NpcWander::new(pos, 18.0, npc_id),
-        Replicate::new(ReplicationMode::SingleServer(NetworkTarget::All)),
-    ));
+        commands.spawn((
+            Npc {
+                id: npc_id,
+                archetype: NpcArchetype::Barbarian,
+            },
+            NpcPosition(pos),
+            NpcRotation(0.0),
+            Health::new(120.0),
+            NpcWander::new(pos, 18.0, npc_id),
+            Replicate::new(ReplicationMode::SingleServer(NetworkTarget::All)),
+        ));
 
-    info!("Spawned NPC {} near spawn at {:?}", npc_id, pos);
+        info!("Spawned NPC {} near spawn at {:?}", npc_id, pos);
+    }
 }
 
 // =============================================================================

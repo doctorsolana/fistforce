@@ -104,6 +104,7 @@ pub enum BulletImpactSurface {
     Terrain,
     PracticeWall,
     Player,
+    Npc,
 }
 
 /// Server -> Client: bullet impact (reliable visual feedback independent of bullet replication)

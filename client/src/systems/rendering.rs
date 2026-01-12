@@ -5,9 +5,10 @@
 use bevy::prelude::*;
 use bevy::camera::Exposure;
 use bevy::core_pipeline::tonemapping::Tonemapping;
-use bevy::light::{light_consts::lux, AtmosphereEnvironmentMapLight};
+use bevy::light::{light_consts::lux, AtmosphereEnvironmentMapLight, DirectionalLightShadowMap};
 use bevy::pbr::{Atmosphere, AtmosphereMode, AtmosphereSettings};
 use bevy::post_process::bloom::Bloom;
+use bevy::render::view::Msaa;
 
 // =============================================================================
 // COMPONENTS
@@ -52,26 +53,26 @@ const DESERT_ATMOSPHERE: Atmosphere = Atmosphere {
 /// Lowering these tends to recover a lot of FPS, especially on integrated GPUs.
 fn desert_atmosphere_settings_perf() -> AtmosphereSettings {
     AtmosphereSettings {
-        // Global LUTs (reduced a bit)
-        transmittance_lut_size: UVec2::new(192, 96),
-        transmittance_lut_samples: 28,
-        multiscattering_lut_size: UVec2::new(24, 24),
-        multiscattering_lut_dirs: 48,
-        multiscattering_lut_samples: 14,
+        // Global LUTs (aggressively reduced for performance)
+        transmittance_lut_size: UVec2::new(128, 64),
+        transmittance_lut_samples: 20,
+        multiscattering_lut_size: UVec2::new(16, 16),
+        multiscattering_lut_dirs: 32,
+        multiscattering_lut_samples: 10,
 
-        // View-dependent LUTs (big wins)
-        sky_view_lut_size: UVec2::new(256, 128),
-        sky_view_lut_samples: 10,
-        aerial_view_lut_size: UVec3::new(24, 24, 24),
-        aerial_view_lut_samples: 6,
-        // Smaller max distance slightly reduces work and is usually fine for ground gameplay
-        aerial_view_lut_max_distance: 2.4e4,
+        // View-dependent LUTs (big wins - reduced further)
+        sky_view_lut_size: UVec2::new(192, 96),
+        sky_view_lut_samples: 8,
+        aerial_view_lut_size: UVec3::new(16, 16, 16),
+        aerial_view_lut_samples: 4,
+        // Smaller max distance - don't need aerial perspective past 10km
+        aerial_view_lut_max_distance: 1.0e4,
 
         // 1 unit = 1 meter in our world
         scene_units_to_m: 1.0,
 
         // Fallback cap used in some paths
-        sky_max_samples: 12,
+        sky_max_samples: 8,
 
         rendering_method: AtmosphereMode::LookupTexture,
     }
@@ -83,11 +84,17 @@ fn desert_atmosphere_settings_perf() -> AtmosphereSettings {
 
 /// One-time rendering setup.
 pub fn setup_rendering(mut commands: Commands) {
+    // Performance: directional light shadows are expensive, especially with multiple cascades.
+    // Lowering the shadow map resolution is a big win while keeping shadows enabled.
+    commands.insert_resource(DirectionalLightShadowMap { size: 1024 });
+
     // With Atmosphere enabled, the sky is rendered procedurally, so ClearColor is mostly a fallback.
     commands.insert_resource(ClearColor(Color::BLACK));
 
     commands.spawn((
         Camera3d::default(),
+        // Performance: Disable MSAA (big win, we use bloom/tonemapping for quality)
+        Msaa::Off,
         // Nice highlights rolloff for HDR outdoor scenes.
         Tonemapping::AcesFitted,
         // Physical light levels (RAW_SUNLIGHT) are bright: slightly higher exposure for harsh desert sun
@@ -96,20 +103,27 @@ pub fn setup_rendering(mut commands: Commands) {
         DESERT_ATMOSPHERE,
         // Atmosphere settings (perf-tuned LUT sizes/samples).
         desert_atmosphere_settings_perf(),
-        // Enhanced bloom for that blazing desert sun - slightly stronger than NATURAL
+        // Enhanced bloom for that blazing desert sun
+        // Performance: Use fewer bloom passes (composite_mode)
         Bloom {
-            intensity: 0.25,    // Stronger than NATURAL (0.15)
+            intensity: 0.2,
+            low_frequency_boost: 0.5,
+            low_frequency_boost_curvature: 0.8,
+            high_pass_frequency: 0.8,
             ..Bloom::NATURAL
         },
         // Let the atmosphere drive ambient/IBL lighting for this view.
-        //
-        // IMPORTANT: default cubemap is 512x512 and can be expensive. We use a smaller size.
+        // Performance: Tiny cubemap - we mostly use the sun anyway
         AtmosphereEnvironmentMapLight {
-            intensity: 1.0,
+            intensity: 0.8,
             affects_lightmapped_mesh_diffuse: true,
-            size: UVec2::new(128, 128),
+            size: UVec2::new(64, 64), // Reduced from 128 for perf
         },
         Transform::from_xyz(0.0, 10.0, 5.0).looking_at(Vec3::ZERO, Vec3::Y),
+        // Explicit spatial + visibility components (camera is parent of the first-person weapon model).
+        GlobalTransform::default(),
+        Visibility::default(),
+        InheritedVisibility::default(),
     ));
 
     info!("Client rendering initialized with desert atmosphere");

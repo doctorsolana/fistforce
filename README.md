@@ -1,67 +1,34 @@
-# 3D Sandbox Game
+# FistForce
 
-A multiplayer open-world sandbox game built with Rust and Bevy.
+A multiplayer 3D sandbox shooter built with Rust and Bevy.
 
-## Architecture
+## Features
 
-- **Server**: Headless authoritative server that manages game state
-- **Client**: Renders the world and handles player input
-- **Shared**: Common code (components, protocol, constants)
-
-## Requirements
-
-- Rust (latest stable)
-- macOS, Windows, or Linux
+- 🏜️ Desert & grassland biomes with procedural props
+- 🎯 Server-authoritative shooting with bullet physics
+- 🤖 NPCs with pathfinding AI
+- 🌅 Dynamic day/night cycle with atmospheric scattering
+- 🚗 Vehicle system
+- 🎮 Smooth client-side prediction
 
 ## Quick Start
-
-The easiest way to run the game:
 
 ```bash
 ./run.sh
 ```
 
-This starts the server in the background, then launches the client.
-
-### Run Script Options
-
-```bash
-./run.sh          # Start both server and client (default)
-./run.sh both     # Same as above
-./run.sh server   # Start only the server
-./run.sh client   # Start only the client
-```
-
-### Manual Start
-
-If you prefer to run things manually:
-
-```bash
-# Terminal 1 - Server
-cargo run -p server --release
-
-# Terminal 2 - Client
-cargo run -p client --release
-```
-
 ## Controls
 
-- **WASD**: Move
-- **Mouse**: Look around
-- **Click**: Grab cursor for FPS mode
-- **Escape**: Release cursor
+| Key | Action |
+|-----|--------|
+| WASD | Move |
+| Space | Jump |
+| Mouse | Look |
+| LMB | Shoot |
+| F3 | Debug mode |
+| Esc | Release cursor |
 
-## Development
+## Tech
 
-First build may take a few minutes to compile dependencies.
-
-For faster iteration during development, you can enable dynamic linking:
-
-```bash
-cargo run -p client --features bevy/dynamic_linking
-```
-
-## Tech Stack
-
-- [Bevy](https://bevyengine.org/) - Game engine
-- [Lightyear](https://github.com/cBournhonesque/lightyear) - Networking
+- [Bevy 0.17](https://bevyengine.org/) — Game engine
+- [Lightyear](https://github.com/cBournhonesque/lightyear) — Networking

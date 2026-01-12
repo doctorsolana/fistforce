@@ -30,6 +30,7 @@ pub const BASE_HEIGHT: f32 = 0.0;
 pub enum Biome {
     Desert,
     Grasslands,
+    Natureland,
 }
 
 impl Biome {
@@ -40,6 +41,8 @@ impl Biome {
             Biome::Desert => Color::srgb(0.85, 0.75, 0.55),
             // Lush green grass
             Biome::Grasslands => Color::srgb(0.35, 0.55, 0.25),
+            // Stylized vibrant forest floor - rich earthy brown with moss tint
+            Biome::Natureland => Color::srgb(0.28, 0.42, 0.22),
         }
     }
 
@@ -48,6 +51,7 @@ impl Biome {
         match self {
             Biome::Desert => Color::srgb(0.90, 0.80, 0.60),
             Biome::Grasslands => Color::srgb(0.40, 0.60, 0.30),
+            Biome::Natureland => Color::srgb(0.32, 0.48, 0.26),
         }
     }
 }
@@ -97,6 +101,7 @@ impl ChunkCoord {
 pub struct TerrainGenerator {
     height_noise: Perlin,
     biome_noise: Perlin,
+    biome_noise_2: Perlin, // Secondary noise for natureland placement
     dune_noise: Perlin,
     detail_noise: Perlin,
     #[allow(dead_code)]
@@ -108,6 +113,7 @@ impl TerrainGenerator {
         Self {
             height_noise: Perlin::new(seed),
             biome_noise: Perlin::new(seed.wrapping_add(1000)),
+            biome_noise_2: Perlin::new(seed.wrapping_add(1500)),
             dune_noise: Perlin::new(seed.wrapping_add(2000)),
             detail_noise: Perlin::new(seed.wrapping_add(3000)),
             seed,
@@ -139,8 +145,25 @@ impl TerrainGenerator {
 
     /// Get the biome at a world position
     pub fn get_biome(&self, x: f32, z: f32) -> Biome {
-        if self.get_biome_blend(x, z) < 0.0 {
-            Biome::Desert
+        let blend = self.get_biome_blend(x, z);
+        
+        // Desert is near spawn (blend < 0)
+        if blend < 0.0 {
+            return Biome::Desert;
+        }
+        
+        // Use secondary noise to decide between Grasslands and Natureland
+        // Natureland appears in patches within the non-desert areas
+        let nature_scale = 0.0015; // Larger features than the main biome
+        let nature_value = self.biome_noise_2.get([
+            x as f64 * nature_scale,
+            z as f64 * nature_scale,
+        ]) as f32;
+        
+        // Natureland appears in the positive regions of the secondary noise
+        // and only when far enough from spawn (blend > 0.3 for cleaner transitions)
+        if nature_value > 0.2 && blend > 0.3 {
+            Biome::Natureland
         } else {
             Biome::Grasslands
         }
@@ -150,21 +173,37 @@ impl TerrainGenerator {
     /// Smoothly blends between biomes at transitions to avoid cliffs
     pub fn get_height(&self, x: f32, z: f32) -> f32 {
         let blend = self.get_biome_blend(x, z);
+        let biome = self.get_biome(x, z);
         
-        // Get heights from both biomes
+        // Get heights from biomes
         let desert_h = self.get_desert_height(x, z);
         let grass_h = self.get_grasslands_height(x, z);
+        let nature_h = self.get_natureland_height(x, z);
         
-        // Smooth blend in transition zone (-0.3 to +0.3)
-        // Outside this range, use pure biome height
+        // Smooth blend in transition zone (-0.3 to +0.3) for desert/non-desert
         let transition_width = 0.3;
         let t = ((blend / transition_width) * 0.5 + 0.5).clamp(0.0, 1.0);
-        
-        // Smoothstep for nicer transition
         let smooth_t = t * t * (3.0 - 2.0 * t);
         
-        // Blend heights
-        let base_height = desert_h * (1.0 - smooth_t) + grass_h * smooth_t;
+        // For non-desert areas, blend between grasslands and natureland
+        let non_desert_h = match biome {
+            Biome::Natureland => {
+                // Blend natureland with grasslands at edges
+                let nature_scale = 0.0015;
+                let nature_value = self.biome_noise_2.get([
+                    x as f64 * nature_scale,
+                    z as f64 * nature_scale,
+                ]) as f32;
+                // Smooth transition at nature_value ~0.2
+                let nature_t = ((nature_value - 0.1) / 0.2).clamp(0.0, 1.0);
+                let nature_smooth = nature_t * nature_t * (3.0 - 2.0 * nature_t);
+                grass_h * (1.0 - nature_smooth) + nature_h * nature_smooth
+            }
+            _ => grass_h,
+        };
+        
+        // Blend desert with non-desert
+        let base_height = desert_h * (1.0 - smooth_t) + non_desert_h * smooth_t;
         
         // Add ramp near spawn for testing jumps!
         base_height + self.get_ramp_height(x, z)
@@ -273,6 +312,42 @@ impl TerrainGenerator {
         BASE_HEIGHT + base + hill_height + detail
     }
 
+    /// Natureland terrain: stylized forest with varied elevation
+    /// More dramatic terrain with clearings and dense forest areas
+    fn get_natureland_height(&self, x: f32, z: f32) -> f32 {
+        // Base elevation - slightly higher than grasslands for forest feel
+        let base_scale = 0.003;
+        let base = self.height_noise.get([
+            x as f64 * base_scale + 200.0,
+            z as f64 * base_scale + 200.0,
+        ]) as f32 * 5.0 + 6.0; // 6-11m base
+
+        // Gentle rolling terrain - forest floors
+        let roll_scale = 0.008;
+        let rolls = self.height_noise.get([
+            x as f64 * roll_scale + 300.0,
+            z as f64 * roll_scale + 300.0,
+        ]) as f32;
+        let roll_height = rolls * rolls * 6.0; // Squared for softer hills
+
+        // Occasional rocky outcrops
+        let rock_scale = 0.025;
+        let rocks = self.dune_noise.get([
+            x as f64 * rock_scale + 400.0,
+            z as f64 * rock_scale + 400.0,
+        ]) as f32;
+        let rock_height = if rocks > 0.6 { (rocks - 0.6) * 15.0 } else { 0.0 };
+
+        // Fine detail - roots, small bumps
+        let detail_scale = 0.06;
+        let detail = self.detail_noise.get([
+            x as f64 * detail_scale + 500.0,
+            z as f64 * detail_scale + 500.0,
+        ]) as f32 * 0.8;
+
+        BASE_HEIGHT + base + roll_height + rock_height + detail
+    }
+
     /// Get the terrain normal at a world position
     /// This is used to align vehicles/objects with the ground slope
     pub fn get_normal(&self, x: f32, z: f32) -> Vec3 {
@@ -330,6 +405,10 @@ impl TerrainGenerator {
                     Biome::Grasslands => {
                         // Greener in valleys, yellower on hills
                         0.95 + height_factor * 0.1
+                    }
+                    Biome::Natureland => {
+                        // Darker in low areas (forest floor), lighter on outcrops
+                        0.85 + height_factor * 0.2
                     }
                 };
                 

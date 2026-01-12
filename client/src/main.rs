@@ -16,7 +16,10 @@ mod weapon_view;
 
 use bevy::prelude::*;
 use bevy::asset::AssetPlugin;
-use bevy::diagnostic::FrameTimeDiagnosticsPlugin;
+use bevy::diagnostic::{EntityCountDiagnosticsPlugin, FrameTimeDiagnosticsPlugin};
+use bevy::render::diagnostic::RenderDiagnosticsPlugin;
+use bevy::render::settings::{RenderCreation, WgpuSettings, WgpuFeatures};
+use bevy::render::RenderPlugin;
 use bevy::window::WindowResolution;
 use lightyear::prelude::client::ClientPlugins;
 use shared::{protocol::*, weapons::WeaponDebugMode, ProtocolPlugin, SERVER_ADDR, SERVER_PORT};
@@ -48,6 +51,7 @@ fn main() {
     let mut app = App::new();
 
     // Full Bevy with rendering - configure asset path for bundled apps
+    // Performance: Disable MSAA (expensive), enable GPU-driven rendering
     app.add_plugins(DefaultPlugins
         .set(WindowPlugin {
             primary_window: Some(Window {
@@ -61,10 +65,21 @@ fn main() {
             file_path: asset_path,
             ..default()
         })
+        .set(RenderPlugin {
+            render_creation: RenderCreation::Automatic(WgpuSettings {
+                // Enable GPU-driven rendering for better batching
+                features: WgpuFeatures::INDIRECT_FIRST_INSTANCE,
+                ..default()
+            }),
+            ..default()
+        })
     );
     
     // FPS diagnostics for debug overlay
     app.add_plugins(FrameTimeDiagnosticsPlugin::default());
+    // Extra diagnostics for the debug overlay (entity count + render pass timings)
+    app.add_plugins(EntityCountDiagnosticsPlugin::default());
+    app.add_plugins(RenderDiagnosticsPlugin::default());
 
     // Game state machine
     app.init_state::<GameState>();
@@ -93,6 +108,7 @@ fn main() {
     app.add_systems(Startup, (
         systems::setup_rendering,
         systems::setup_particle_assets,
+        weapons::setup_weapon_visual_assets,
         systems::setup_player_character_assets,
         systems::setup_npc_assets,
     ));
@@ -216,6 +232,10 @@ fn main() {
         Update,
         (
             weapons::update_impact_markers,
+            weapons::update_blood_bursts,
+            weapons::update_blood_droplets,
+            weapons::update_blood_splash_rings,
+            weapons::update_blood_ground_splats,
             weapons::handle_hit_confirms,
             weapons::toggle_debug_mode,
             weapons::debug_draw_trajectories,

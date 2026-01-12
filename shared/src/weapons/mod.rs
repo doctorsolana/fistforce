@@ -62,7 +62,7 @@ impl WeaponType {
                 magazine_size: 15,
                 reload_time: 1.5,
                 spread_hip: 0.025,
-                spread_ads: 0.006,
+                spread_ads: 0.001, // Near-perfect ADS accuracy
                 recoil_vertical: 0.018,
                 recoil_horizontal: 0.008,
                 damage_falloff_start: 25.0,
@@ -78,7 +78,7 @@ impl WeaponType {
                 magazine_size: 30,
                 reload_time: 2.3,
                 spread_hip: 0.035,
-                spread_ads: 0.002,
+                spread_ads: 0.0005, // Very precise ADS
                 recoil_vertical: 0.022,
                 recoil_horizontal: 0.012,
                 damage_falloff_start: 80.0,
@@ -94,7 +94,7 @@ impl WeaponType {
                 magazine_size: 5,
                 reload_time: 3.8,
                 spread_hip: 0.08,
-                spread_ads: 0.0003,
+                spread_ads: 0.0, // Perfect accuracy when scoped
                 recoil_vertical: 0.07,
                 recoil_horizontal: 0.015,
                 damage_falloff_start: 150.0,
@@ -110,7 +110,7 @@ impl WeaponType {
                 magazine_size: 5,
                 reload_time: 0.5, // Per shell
                 spread_hip: 0.06,
-                spread_ads: 0.04,
+                spread_ads: 0.025, // Tighter ADS but still spread (shotgun)
                 recoil_vertical: 0.05,
                 recoil_horizontal: 0.02,
                 damage_falloff_start: 8.0,
@@ -126,7 +126,7 @@ impl WeaponType {
                 magazine_size: 35,
                 reload_time: 2.0,
                 spread_hip: 0.028,
-                spread_ads: 0.008,
+                spread_ads: 0.001, // Precise ADS
                 recoil_vertical: 0.015,
                 recoil_horizontal: 0.018,
                 damage_falloff_start: 15.0,

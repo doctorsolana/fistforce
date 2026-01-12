@@ -3,6 +3,8 @@
 //! Spawns decorative assets based on biome type using deterministic placement.
 
 use bevy::prelude::*;
+use bevy::camera::visibility::VisibilityRange;
+use bevy::light::NotShadowCaster;
 use noise::{NoiseFn, Perlin};
 use shared::{terrain::{Biome, ChunkCoord, CHUNK_SIZE}, WorldTerrain};
 
@@ -14,6 +16,18 @@ use crate::states::GameState;
 #[derive(Component)]
 pub struct EnvironmentProp {
     pub chunk: ChunkCoord,
+}
+
+/// Per-prop render tuning applied to the spawned mesh entities under the prop.
+///
+/// This is a cheap way to keep shadows enabled globally while avoiding rendering
+/// thousands of tiny clutter meshes into every directional shadow cascade.
+#[derive(Component, Clone, Copy, Debug)]
+pub struct PropRenderTuning {
+    /// If false, meshes under this prop will get `NotShadowCaster`.
+    pub casts_shadows: bool,
+    /// If set, meshes under this prop will get `VisibilityRange::abrupt(0.0, end)`.
+    pub visible_end_distance: Option<f32>,
 }
 
 /// Tracks which chunks have had props spawned
@@ -32,6 +46,15 @@ pub struct PropAssets {
     pub trees: Vec<Handle<Scene>>,
     pub bushes: Vec<Handle<Scene>>,
     pub grass: Vec<Handle<Scene>>,
+    // Natureland props (Stylized Nature pack)
+    pub nature_pines: Vec<Handle<Scene>>,
+    pub nature_twisted_trees: Vec<Handle<Scene>>,
+    pub nature_bushes: Vec<Handle<Scene>>,
+    pub nature_mushrooms: Vec<Handle<Scene>>,
+    pub nature_ferns: Vec<Handle<Scene>>,
+    pub nature_flowers: Vec<Handle<Scene>>,
+    pub nature_rocks: Vec<Handle<Scene>>,
+    pub nature_grass: Vec<Handle<Scene>>,
 }
 
 /// Plugin for environmental props
@@ -43,7 +66,7 @@ impl Plugin for PropsPlugin {
         app.add_systems(Startup, load_prop_assets);
         app.add_systems(
             Update,
-            (spawn_chunk_props, cleanup_chunk_props)
+            (spawn_chunk_props, apply_prop_render_tuning, cleanup_chunk_props)
                 .run_if(in_state(GameState::Playing)),
         );
     }
@@ -51,6 +74,7 @@ impl Plugin for PropsPlugin {
 
 /// Load all prop GLTF assets at startup
 fn load_prop_assets(mut commands: Commands, asset_server: Res<AssetServer>) {
+    // Desert props (KayKit pack)
     let rocks = vec![
         asset_server.load("Assetsfromassetpack/gltf/Rock_1_A_Color1.gltf#Scene0"),
         asset_server.load("Assetsfromassetpack/gltf/Rock_1_B_Color1.gltf#Scene0"),
@@ -69,6 +93,7 @@ fn load_prop_assets(mut commands: Commands, asset_server: Res<AssetServer>) {
         asset_server.load("Assetsfromassetpack/gltf/Tree_Bare_2_B_Color1.gltf#Scene0"),
     ];
 
+    // Grassland props (KayKit pack)
     let trees = vec![
         asset_server.load("Assetsfromassetpack/gltf/Tree_1_A_Color1.gltf#Scene0"),
         asset_server.load("Assetsfromassetpack/gltf/Tree_1_B_Color1.gltf#Scene0"),
@@ -94,12 +119,79 @@ fn load_prop_assets(mut commands: Commands, asset_server: Res<AssetServer>) {
         asset_server.load("Assetsfromassetpack/gltf/Grass_2_B_Color1.gltf#Scene0"),
     ];
 
+    // Natureland props (Stylized Nature MegaKit)
+    let nature_pines = vec![
+        asset_server.load("StylizedNature/glTF/Pine_1.gltf#Scene0"),
+        asset_server.load("StylizedNature/glTF/Pine_2.gltf#Scene0"),
+        asset_server.load("StylizedNature/glTF/Pine_3.gltf#Scene0"),
+        asset_server.load("StylizedNature/glTF/Pine_4.gltf#Scene0"),
+        asset_server.load("StylizedNature/glTF/Pine_5.gltf#Scene0"),
+    ];
+
+    let nature_twisted_trees = vec![
+        asset_server.load("StylizedNature/glTF/TwistedTree_1.gltf#Scene0"),
+        asset_server.load("StylizedNature/glTF/TwistedTree_2.gltf#Scene0"),
+        asset_server.load("StylizedNature/glTF/TwistedTree_3.gltf#Scene0"),
+        asset_server.load("StylizedNature/glTF/TwistedTree_4.gltf#Scene0"),
+        asset_server.load("StylizedNature/glTF/TwistedTree_5.gltf#Scene0"),
+        asset_server.load("StylizedNature/glTF/CommonTree_1.gltf#Scene0"),
+        asset_server.load("StylizedNature/glTF/CommonTree_2.gltf#Scene0"),
+        asset_server.load("StylizedNature/glTF/CommonTree_3.gltf#Scene0"),
+    ];
+
+    let nature_bushes = vec![
+        asset_server.load("StylizedNature/glTF/Bush_Common.gltf#Scene0"),
+        asset_server.load("StylizedNature/glTF/Bush_Common_Flowers.gltf#Scene0"),
+    ];
+
+    let nature_mushrooms = vec![
+        asset_server.load("StylizedNature/glTF/Mushroom_Common.gltf#Scene0"),
+        asset_server.load("StylizedNature/glTF/Mushroom_Laetiporus.gltf#Scene0"),
+    ];
+
+    let nature_ferns = vec![
+        asset_server.load("StylizedNature/glTF/Fern_1.gltf#Scene0"),
+        asset_server.load("StylizedNature/glTF/Plant_1.gltf#Scene0"),
+        asset_server.load("StylizedNature/glTF/Plant_1_Big.gltf#Scene0"),
+        asset_server.load("StylizedNature/glTF/Plant_7.gltf#Scene0"),
+    ];
+
+    let nature_flowers = vec![
+        asset_server.load("StylizedNature/glTF/Flower_3_Group.gltf#Scene0"),
+        asset_server.load("StylizedNature/glTF/Flower_4_Group.gltf#Scene0"),
+        asset_server.load("StylizedNature/glTF/Clover_1.gltf#Scene0"),
+        asset_server.load("StylizedNature/glTF/Clover_2.gltf#Scene0"),
+    ];
+
+    let nature_rocks = vec![
+        asset_server.load("StylizedNature/glTF/Rock_Medium_1.gltf#Scene0"),
+        asset_server.load("StylizedNature/glTF/Rock_Medium_2.gltf#Scene0"),
+        asset_server.load("StylizedNature/glTF/Rock_Medium_3.gltf#Scene0"),
+        asset_server.load("StylizedNature/glTF/Pebble_Round_1.gltf#Scene0"),
+        asset_server.load("StylizedNature/glTF/Pebble_Round_2.gltf#Scene0"),
+    ];
+
+    let nature_grass = vec![
+        asset_server.load("StylizedNature/glTF/Grass_Common_Short.gltf#Scene0"),
+        asset_server.load("StylizedNature/glTF/Grass_Common_Tall.gltf#Scene0"),
+        asset_server.load("StylizedNature/glTF/Grass_Wispy_Short.gltf#Scene0"),
+        asset_server.load("StylizedNature/glTF/Grass_Wispy_Tall.gltf#Scene0"),
+    ];
+
     commands.insert_resource(PropAssets {
         rocks,
         dead_trees,
         trees,
         bushes,
         grass,
+        nature_pines,
+        nature_twisted_trees,
+        nature_bushes,
+        nature_mushrooms,
+        nature_ferns,
+        nature_flowers,
+        nature_rocks,
+        nature_grass,
     });
 
     info!("Loaded environmental prop assets");
@@ -130,9 +222,18 @@ fn spawn_chunk_props(
 
         let chunk_origin = coord.world_pos();
         
+        // Sample center to determine biome for grid spacing
+        let center_x = chunk_origin.x + CHUNK_SIZE / 2.0;
+        let center_z = chunk_origin.z + CHUNK_SIZE / 2.0;
+        let chunk_biome = terrain.generator.get_biome(center_x, center_z);
+        
         // Sample points within the chunk for prop placement
         // Use a grid with noise-based jitter for natural distribution
-        let grid_spacing = 8.0; // Base spacing between potential prop positions
+        // Natureland uses wider spacing due to more detailed models
+        let grid_spacing = match chunk_biome {
+            Biome::Natureland => 12.0, // Sparser for detailed models
+            _ => 8.0,                  // Normal density for other biomes
+        };
         let steps = (CHUNK_SIZE / grid_spacing) as i32;
 
         for gz in 0..steps {
@@ -177,6 +278,17 @@ fn spawn_chunk_props(
                             variety,
                         );
                     }
+                    Biome::Natureland => {
+                        spawn_natureland_prop(
+                            &mut commands,
+                            &assets,
+                            world_root,
+                            *coord,
+                            Vec3::new(world_x, world_y, world_z),
+                            density,
+                            variety,
+                        );
+                    }
                 }
             }
         }
@@ -203,6 +315,10 @@ fn spawn_desert_prop(
         
         let prop = commands.spawn((
             EnvironmentProp { chunk },
+            PropRenderTuning {
+                casts_shadows: true,
+                visible_end_distance: None,
+            },
             SceneRoot(assets.rocks[rock_idx].clone()),
             Transform::from_translation(position)
                 .with_rotation(rotation)
@@ -218,6 +334,10 @@ fn spawn_desert_prop(
         
         let prop = commands.spawn((
             EnvironmentProp { chunk },
+            PropRenderTuning {
+                casts_shadows: true,
+                visible_end_distance: None,
+            },
             SceneRoot(assets.dead_trees[tree_idx].clone()),
             Transform::from_translation(position)
                 .with_rotation(rotation)
@@ -245,6 +365,10 @@ fn spawn_grassland_prop(
         
         let prop = commands.spawn((
             EnvironmentProp { chunk },
+            PropRenderTuning {
+                casts_shadows: true,
+                visible_end_distance: None,
+            },
             SceneRoot(assets.trees[tree_idx].clone()),
             Transform::from_translation(position)
                 .with_rotation(rotation)
@@ -260,6 +384,11 @@ fn spawn_grassland_prop(
         
         let prop = commands.spawn((
             EnvironmentProp { chunk },
+            // Bushes tend to be lots of little leaves; they don't need to cast shadows.
+            PropRenderTuning {
+                casts_shadows: false,
+                visible_end_distance: Some(90.0),
+            },
             SceneRoot(assets.bushes[bush_idx].clone()),
             Transform::from_translation(position)
                 .with_rotation(rotation)
@@ -275,12 +404,211 @@ fn spawn_grassland_prop(
         
         let prop = commands.spawn((
             EnvironmentProp { chunk },
+            PropRenderTuning {
+                casts_shadows: false,
+                visible_end_distance: Some(80.0), // Increased from 45 for better visibility
+            },
             SceneRoot(assets.grass[grass_idx].clone()),
             Transform::from_translation(position)
                 .with_rotation(rotation)
                 .with_scale(Vec3::splat(scale)),
         )).id();
         commands.entity(world_root).add_child(prop);
+    }
+}
+
+/// Spawn natureland props (stylized forest with pines, twisted trees, mushrooms, etc.)
+fn spawn_natureland_prop(
+    commands: &mut Commands,
+    assets: &PropAssets,
+    world_root: Entity,
+    chunk: ChunkCoord,
+    position: Vec3,
+    density: f32,
+    variety: f32,
+) {
+    // Pine trees: ~12% chance (tall conifers)
+    if density > 0.4 {
+        let tree_idx = ((variety.abs() * 100.0) as usize) % assets.nature_pines.len();
+        let rotation = Quat::from_rotation_y(variety * std::f32::consts::TAU);
+        let scale = 1.0 + variety.abs() * 0.5; // Scale 1.0-1.5
+        
+        let prop = commands.spawn((
+            EnvironmentProp { chunk },
+            PropRenderTuning {
+                casts_shadows: true,
+                visible_end_distance: None,
+            },
+            SceneRoot(assets.nature_pines[tree_idx].clone()),
+            Transform::from_translation(position)
+                .with_rotation(rotation)
+                .with_scale(Vec3::splat(scale)),
+        )).id();
+        commands.entity(world_root).add_child(prop);
+    }
+    // Twisted/common trees: ~10% chance
+    else if density > 0.3 && density < 0.4 {
+        let tree_idx = ((variety.abs() * 100.0) as usize) % assets.nature_twisted_trees.len();
+        let rotation = Quat::from_rotation_y(variety * std::f32::consts::TAU);
+        let scale = 0.9 + variety.abs() * 0.4;
+        
+        let prop = commands.spawn((
+            EnvironmentProp { chunk },
+            PropRenderTuning {
+                casts_shadows: true,
+                visible_end_distance: None,
+            },
+            SceneRoot(assets.nature_twisted_trees[tree_idx].clone()),
+            Transform::from_translation(position)
+                .with_rotation(rotation)
+                .with_scale(Vec3::splat(scale)),
+        )).id();
+        commands.entity(world_root).add_child(prop);
+    }
+    // Bushes: ~12% chance
+    else if density > 0.18 && density < 0.3 {
+        let bush_idx = ((variety.abs() * 100.0) as usize) % assets.nature_bushes.len();
+        let rotation = Quat::from_rotation_y(variety * std::f32::consts::TAU);
+        let scale = 0.7 + variety.abs() * 0.4;
+        
+        let prop = commands.spawn((
+            EnvironmentProp { chunk },
+            PropRenderTuning {
+                casts_shadows: false,
+                visible_end_distance: Some(90.0),
+            },
+            SceneRoot(assets.nature_bushes[bush_idx].clone()),
+            Transform::from_translation(position)
+                .with_rotation(rotation)
+                .with_scale(Vec3::splat(scale)),
+        )).id();
+        commands.entity(world_root).add_child(prop);
+    }
+    // Ferns and plants: ~15% chance
+    else if density > 0.03 && density < 0.18 {
+        let fern_idx = ((variety.abs() * 100.0) as usize) % assets.nature_ferns.len();
+        let rotation = Quat::from_rotation_y(variety * std::f32::consts::TAU);
+        let scale = 0.6 + variety.abs() * 0.3;
+        
+        let prop = commands.spawn((
+            EnvironmentProp { chunk },
+            PropRenderTuning {
+                casts_shadows: false,
+                visible_end_distance: Some(70.0), // Increased from 55 for better visibility
+            },
+            SceneRoot(assets.nature_ferns[fern_idx].clone()),
+            Transform::from_translation(position)
+                .with_rotation(rotation)
+                .with_scale(Vec3::splat(scale)),
+        )).id();
+        commands.entity(world_root).add_child(prop);
+    }
+    // Grass: ~15% chance
+    else if density > -0.12 && density < 0.03 {
+        let grass_idx = ((variety.abs() * 100.0) as usize) % assets.nature_grass.len();
+        let rotation = Quat::from_rotation_y(variety * std::f32::consts::TAU);
+        let scale = 0.5 + variety.abs() * 0.3;
+        
+        let prop = commands.spawn((
+            EnvironmentProp { chunk },
+            PropRenderTuning {
+                casts_shadows: false,
+                visible_end_distance: Some(75.0), // Increased from 45 for better visibility
+            },
+            SceneRoot(assets.nature_grass[grass_idx].clone()),
+            Transform::from_translation(position)
+                .with_rotation(rotation)
+                .with_scale(Vec3::splat(scale)),
+        )).id();
+        commands.entity(world_root).add_child(prop);
+    }
+    // Flowers: ~8% chance
+    else if density > -0.2 && density < -0.12 {
+        let flower_idx = ((variety.abs() * 100.0) as usize) % assets.nature_flowers.len();
+        let rotation = Quat::from_rotation_y(variety * std::f32::consts::TAU);
+        let scale = 0.5 + variety.abs() * 0.25;
+        
+        let prop = commands.spawn((
+            EnvironmentProp { chunk },
+            PropRenderTuning {
+                casts_shadows: false,
+                visible_end_distance: Some(55.0), // Increased from 35 for better visibility
+            },
+            SceneRoot(assets.nature_flowers[flower_idx].clone()),
+            Transform::from_translation(position)
+                .with_rotation(rotation)
+                .with_scale(Vec3::splat(scale)),
+        )).id();
+        commands.entity(world_root).add_child(prop);
+    }
+    // Mushrooms: ~5% chance (rare)
+    else if density > -0.25 && density < -0.2 {
+        let mush_idx = ((variety.abs() * 100.0) as usize) % assets.nature_mushrooms.len();
+        let rotation = Quat::from_rotation_y(variety * std::f32::consts::TAU);
+        let scale = 0.4 + variety.abs() * 0.3;
+        
+        let prop = commands.spawn((
+            EnvironmentProp { chunk },
+            PropRenderTuning {
+                casts_shadows: false,
+                visible_end_distance: Some(30.0),
+            },
+            SceneRoot(assets.nature_mushrooms[mush_idx].clone()),
+            Transform::from_translation(position)
+                .with_rotation(rotation)
+                .with_scale(Vec3::splat(scale)),
+        )).id();
+        commands.entity(world_root).add_child(prop);
+    }
+    // Rocks: ~5% chance
+    else if density > -0.3 && density < -0.25 {
+        let rock_idx = ((variety.abs() * 100.0) as usize) % assets.nature_rocks.len();
+        let rotation = Quat::from_rotation_y(variety * std::f32::consts::TAU);
+        let scale = 0.6 + variety.abs() * 0.4;
+        
+        let prop = commands.spawn((
+            EnvironmentProp { chunk },
+            PropRenderTuning {
+                casts_shadows: true,
+                visible_end_distance: Some(180.0),
+            },
+            SceneRoot(assets.nature_rocks[rock_idx].clone()),
+            Transform::from_translation(position)
+                .with_rotation(rotation)
+                .with_scale(Vec3::splat(scale)),
+        )).id();
+        commands.entity(world_root).add_child(prop);
+    }
+}
+
+/// Apply [`PropRenderTuning`] to newly spawned meshes under prop scene hierarchies.
+fn apply_prop_render_tuning(
+    mut commands: Commands,
+    new_meshes: Query<Entity, Added<Mesh3d>>,
+    parents: Query<&ChildOf>,
+    tunings: Query<&PropRenderTuning>,
+) {
+    for mesh_entity in new_meshes.iter() {
+        // Walk up the hierarchy until we find an ancestor with `PropRenderTuning`.
+        let mut current = mesh_entity;
+        let tuning = loop {
+            if let Ok(tuning) = tunings.get(current) {
+                break Some(*tuning);
+            }
+            let Ok(parent) = parents.get(current) else {
+                break None;
+            };
+            current = parent.parent();
+        };
+
+        let Some(tuning) = tuning else { continue };
+
+        if !tuning.casts_shadows {
+            commands.entity(mesh_entity).insert(NotShadowCaster);
+        }
+        if let Some(end) = tuning.visible_end_distance {
+            commands.entity(mesh_entity).insert(VisibilityRange::abrupt(0.0, end));
+        }
     }
 }
 

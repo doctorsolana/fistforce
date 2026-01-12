@@ -120,6 +120,7 @@ pub fn surface_mu(biome: Biome) -> f32 {
     match biome {
         Biome::Desert => motorbike::MU_DESERT,
         Biome::Grasslands => motorbike::MU_GRASSLANDS,
+        Biome::Natureland => motorbike::MU_GRASSLANDS, // Similar to grasslands (forest floor)
     }
 }
 

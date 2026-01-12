@@ -104,8 +104,14 @@ pub fn handle_mouse_input(
     mouse_button: Res<ButtonInput<MouseButton>>,
     mut input_state: ResMut<InputState>,
 ) {
-    // Track ADS (right-click)
-    input_state.aiming = mouse_button.pressed(MouseButton::Right) && !input_state.in_vehicle;
+    // Track ADS (right-click to toggle, not hold)
+    if mouse_button.just_pressed(MouseButton::Right) && !input_state.in_vehicle {
+        input_state.aiming = !input_state.aiming;
+    }
+    // Disable ADS when entering vehicle
+    if input_state.in_vehicle {
+        input_state.aiming = false;
+    }
     
     let mut delta = Vec2::ZERO;
     for motion in mouse_motion.read() {

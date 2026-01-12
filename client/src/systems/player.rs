@@ -37,6 +37,10 @@ pub struct NeedsRangerRigSetup;
 #[derive(Component)]
 pub struct RangerAnimationRoot;
 
+/// The Player entity that owns this rig (cached to avoid per-frame hierarchy walks).
+#[derive(Component, Clone, Copy)]
+pub struct RangerRigOwner(pub Entity);
+
 /// Tracks whether the local player is currently in the "walk" state to avoid restarting every frame.
 #[derive(Component, Default)]
 pub struct RangerAnimState {
@@ -117,10 +121,13 @@ pub fn handle_player_spawned(
         let is_local = our_peer_id.map(|id| player.client_id == id).unwrap_or(false);
 
         // The replicated player entity is server-authoritative; we only add visuals here.
-        // IMPORTANT: `sync_player_transforms` expects `Transform` + `Visibility` to exist on the Player entity.
+        // IMPORTANT: Full spatial bundle (including GlobalTransform) to avoid B0004 warnings
+        // when the model hierarchy is spawned as children.
         commands.entity(entity).insert((
             Transform::from_translation(position.0),
+            GlobalTransform::from_translation(position.0),
             Visibility::Inherited,
+            InheritedVisibility::default(),
         ));
 
         // Spawn KayKit Ranger model as a child (so it inherits transform + visibility).
@@ -135,6 +142,9 @@ pub fn handle_player_spawned(
                 Transform::from_xyz(0.0, -PLAYER_HEIGHT * 0.5, 0.0)
                     .with_rotation(Quat::from_rotation_y(std::f32::consts::PI))
                     .with_scale(Vec3::splat(1.0)),
+                GlobalTransform::default(),
+                Visibility::Inherited,
+                InheritedVisibility::default(),
             ));
         });
 
@@ -157,10 +167,16 @@ pub fn setup_ranger_rig(
     model_roots: Query<Entity, (With<RangerModelRoot>, With<NeedsRangerRigSetup>)>,
     children_q: Query<&Children>,
     names_q: Query<&Name>,
+    parents_q: Query<&ChildOf>,
 ) {
     let Some(ranger_assets) = ranger_assets else { return };
 
     for model_root in model_roots.iter() {
+        // Cache the owning player entity (parent of the RangerModelRoot).
+        let Ok(owner) = parents_q.get(model_root).map(|p| p.parent()) else {
+            continue;
+        };
+
         // Find the rig root node inside the spawned scene (named "Rig_Medium" in KayKit).
         let mut stack: Vec<Entity> = vec![model_root];
         let mut rig_root: Option<Entity> = None;
@@ -184,6 +200,7 @@ pub fn setup_ranger_rig(
         // Attach animation player + graph to the rig root.
         commands.entity(rig_root).insert((
             RangerAnimationRoot,
+            RangerRigOwner(owner),
             RangerAnimState::default(),
             AnimationPlayer::default(),
             AnimationGraphHandle(ranger_assets.animation_graph.clone()),
@@ -226,8 +243,7 @@ pub fn setup_ranger_rig(
 pub fn update_ranger_animation(
     ranger_assets: Option<Res<RangerCharacterAssets>>,
     input_state: Res<crate::input::InputState>,
-    mut anim_roots: Query<(Entity, &mut RangerAnimState, &mut AnimationPlayer), With<RangerAnimationRoot>>,
-    parents: Query<&ChildOf>,
+    mut anim_roots: Query<(&RangerRigOwner, &mut RangerAnimState, &mut AnimationPlayer), With<RangerAnimationRoot>>,
     local_players: Query<(), With<LocalPlayer>>,
 ) {
     let Some(ranger_assets) = ranger_assets else { return };
@@ -236,18 +252,9 @@ pub fn update_ranger_animation(
         !input_state.in_vehicle
             && (input_state.forward || input_state.backward || input_state.left || input_state.right);
 
-    for (entity, mut state, mut player) in anim_roots.iter_mut() {
-        // Check whether this rig belongs to the LocalPlayer (walk only for local).
-        let mut cursor = entity;
-        let mut is_local = false;
-        while let Ok(parent) = parents.get(cursor) {
-            let p = parent.parent();
-            if local_players.contains(p) {
-                is_local = true;
-                break;
-            }
-            cursor = p;
-        }
+    for (owner, mut state, mut player) in anim_roots.iter_mut() {
+        // Walk animation only for the local player's rig.
+        let is_local = local_players.contains(owner.0);
 
         let should_walk = is_local && local_is_moving;
 

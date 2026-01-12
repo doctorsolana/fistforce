@@ -3,7 +3,7 @@
 //! Spawning world visuals, practice wall, and other static environment.
 
 use bevy::prelude::*;
-use bevy::light::{light_consts::lux, SunDisk};
+use bevy::light::{light_consts::lux, CascadeShadowConfigBuilder, SunDisk};
 
 use super::rendering::SunLight;
 
@@ -36,7 +36,15 @@ pub fn spawn_world(
     }
 
     let root = commands
-        .spawn((ClientWorldRoot, Transform::default(), Visibility::default()))
+        // IMPORTANT: this is the parent of terrain chunks / props / lights.
+        // It must have GlobalTransform or Bevy will emit B0004 warnings for children.
+        .spawn((
+            ClientWorldRoot,
+            Transform::default(),
+            GlobalTransform::default(),
+            Visibility::default(),
+            InheritedVisibility::default(),
+        ))
         .id();
 
     // --- Sun light (driven by day/night cycle) ---
@@ -52,6 +60,17 @@ pub fn spawn_world(
             color: Color::srgb(1.0, 0.98, 0.92),
             ..default()
         },
+        // Performance: keep shadows enabled, but make them cheaper.
+        //
+        // Default is 4 cascades out to 150m. With dense/high-poly scenes, that
+        // can become very expensive (shadow pass per cascade).
+        CascadeShadowConfigBuilder {
+            num_cascades: 3,
+            maximum_distance: 120.0,
+            first_cascade_far_bound: 12.0,
+            ..default()
+        }
+        .build(),
         // Brighter sun disk for that harsh desert sun feel
         SunDisk {
             angular_size: 0.00930842,  // Same as EARTH

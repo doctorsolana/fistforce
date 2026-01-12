@@ -15,6 +15,15 @@ use shared::{
     Player, PlayerPosition, WorldTerrain, FIXED_TIMESTEP_HZ, PLAYER_HEIGHT, PLAYER_RADIUS,
 };
 
+/// Server-only marker used to delay bullet despawn by a few frames.
+///
+/// This prevents clients from receiving a despawn for a bullet entity that was
+/// spawned and destroyed within the same replication tick.
+#[derive(Component, Clone, Copy, Debug)]
+pub(crate) struct BulletPendingDespawn {
+    despawn_at: f32,
+}
+
 /// Helper to convert PeerId to u64 for owner tracking
 fn peer_id_to_u64(peer_id: PeerId) -> u64 {
     match peer_id {
@@ -114,7 +123,7 @@ pub fn simulate_bullets(
         &mut BulletPrevPosition,
         &mut Transform,
         &mut PlayerPosition,
-    )>,
+    ), Without<BulletPendingDespawn>>,
 ) {
     let dt = 1.0 / FIXED_TIMESTEP_HZ as f32;
     
@@ -136,10 +145,23 @@ pub fn simulate_bullets(
 /// Detect bullet hits against players
 pub fn detect_bullet_hits(
     mut commands: Commands,
-    bullets: Query<(Entity, &Bullet, &BulletVelocity, &BulletPrevPosition, &Transform)>,
+    time: Res<Time>,
+    bullets: Query<
+        (Entity, &Bullet, &BulletVelocity, &BulletPrevPosition, &Transform),
+        Without<BulletPendingDespawn>,
+    >,
     mut players: Query<(Entity, &Player, &PlayerPosition, &mut Health), (With<Player>, Without<Npc>)>,
     mut npcs: Query<(Entity, &Npc, &NpcPosition, &mut Health), (With<Npc>, Without<Player>)>,
-    mut client_links: Query<(&RemoteId, &mut MessageSender<HitConfirm>, &mut MessageSender<DamageReceived>, &mut MessageSender<PlayerKilled>), With<ClientOf>>,
+    mut client_links: Query<
+        (
+            &RemoteId,
+            &mut MessageSender<HitConfirm>,
+            &mut MessageSender<DamageReceived>,
+            &mut MessageSender<PlayerKilled>,
+            &mut MessageSender<BulletImpact>,
+        ),
+        With<ClientOf>,
+    >,
 ) {
     // Collect hits first to avoid borrow issues
     #[derive(Clone, Copy, Debug)]
@@ -148,7 +170,24 @@ pub fn detect_bullet_hits(
         Npc(Entity, u64),
     }
 
-    let mut hits: Vec<(Entity, u64, Victim, Vec3, f32, damage::HitZone, f32, shared::weapons::WeaponType)> = Vec::new();
+    #[derive(Clone, Copy, Debug)]
+    struct HitRecord {
+        bullet_entity: Entity,
+        shooter_id: u64,
+        victim: Victim,
+        victim_pos: Vec3,
+        hit_point: Vec3,
+        hit_normal: Vec3,
+        damage_amount: f32,
+        hit_zone: damage::HitZone,
+        weapon_type: shared::weapons::WeaponType,
+        bullet_spawn_position: Vec3,
+        bullet_initial_velocity: Vec3,
+    }
+
+    let now = time.elapsed_secs();
+    let despawn_delay = 0.05;
+    let mut hits: Vec<HitRecord> = Vec::new();
     
     for (bullet_entity, bullet, _velocity, prev_pos, transform) in bullets.iter() {
         let ray_start = prev_pos.0;
@@ -182,16 +221,20 @@ pub fn detect_bullet_hits(
                 let stats = bullet.weapon_type.stats();
                 let damage_amount = damage::calculate_damage(&stats, distance, damage::HitZone::Head);
 
-                hits.push((
+                let hit_normal = (hit_point - head_center).normalize_or_zero();
+                hits.push(HitRecord {
                     bullet_entity,
-                    bullet.owner_id,
-                    Victim::Npc(npc_entity, npc.id),
-                    npc_pos.0,
+                    shooter_id: bullet.owner_id,
+                    victim: Victim::Npc(npc_entity, npc.id),
+                    victim_pos: npc_pos.0,
+                    hit_point,
+                    hit_normal,
                     damage_amount,
-                    damage::HitZone::Head,
-                    bullet.spawn_position.x,
-                    bullet.weapon_type,
-                ));
+                    hit_zone: damage::HitZone::Head,
+                    weapon_type: bullet.weapon_type,
+                    bullet_spawn_position: bullet.spawn_position,
+                    bullet_initial_velocity: bullet.initial_velocity,
+                });
                 // One hit per bullet.
                 hit_recorded = true;
                 break;
@@ -214,16 +257,30 @@ pub fn detect_bullet_hits(
                 let stats = bullet.weapon_type.stats();
                 let damage_amount = damage::calculate_damage(&stats, distance, hit_zone);
 
-                hits.push((
+                // Approximate normal from capsule axis
+                let ab = b - a;
+                let t = if ab.length_squared() > 1e-6 {
+                    (hit_point - a).dot(ab) / ab.length_squared()
+                } else {
+                    0.0
+                }
+                .clamp(0.0, 1.0);
+                let closest = a + ab * t;
+                let hit_normal = (hit_point - closest).normalize_or_zero();
+
+                hits.push(HitRecord {
                     bullet_entity,
-                    bullet.owner_id,
-                    Victim::Npc(npc_entity, npc.id),
-                    npc_pos.0,
+                    shooter_id: bullet.owner_id,
+                    victim: Victim::Npc(npc_entity, npc.id),
+                    victim_pos: npc_pos.0,
+                    hit_point,
+                    hit_normal,
                     damage_amount,
                     hit_zone,
-                    bullet.spawn_position.x,
-                    bullet.weapon_type,
-                ));
+                    weapon_type: bullet.weapon_type,
+                    bullet_spawn_position: bullet.spawn_position,
+                    bullet_initial_velocity: bullet.initial_velocity,
+                });
                 hit_recorded = true;
                 break;
             }
@@ -260,16 +317,30 @@ pub fn detect_bullet_hits(
                 let stats = bullet.weapon_type.stats();
                 let damage_amount = damage::calculate_damage(&stats, distance, hit_zone);
 
-                hits.push((
+                // Approximate normal from capsule axis
+                let ab = capsule_top - capsule_bottom;
+                let t = if ab.length_squared() > 1e-6 {
+                    (hit_point - capsule_bottom).dot(ab) / ab.length_squared()
+                } else {
+                    0.0
+                }
+                .clamp(0.0, 1.0);
+                let closest = capsule_bottom + ab * t;
+                let hit_normal = (hit_point - closest).normalize_or_zero();
+
+                hits.push(HitRecord {
                     bullet_entity,
-                    bullet.owner_id,
-                    Victim::Player(player.client_id),
-                    player_pos.0,
+                    shooter_id: bullet.owner_id,
+                    victim: Victim::Player(player.client_id),
+                    victim_pos: player_pos.0,
+                    hit_point,
+                    hit_normal,
                     damage_amount,
                     hit_zone,
-                    bullet.spawn_position.x,
-                    bullet.weapon_type,
-                ));
+                    weapon_type: bullet.weapon_type,
+                    bullet_spawn_position: bullet.spawn_position,
+                    bullet_initial_velocity: bullet.initial_velocity,
+                });
                 break;
             }
         }
@@ -282,51 +353,70 @@ pub fn detect_bullet_hits(
         .collect();
     
     // Process hits
-    for (bullet_entity, shooter_id, victim, victim_pos, damage_amount, hit_zone, spawn_x, weapon_type) in hits {
-        let shooter_peer_id = shooter_ids.get(&shooter_id).copied();
+    for hit in hits {
+        let shooter_peer_id = shooter_ids.get(&hit.shooter_id).copied();
         
-        match victim {
+        match hit.victim {
             Victim::Player(victim_id) => {
                 // Find and damage the victim
                 for (_, player, _, mut health) in players.iter_mut() {
                     if player.client_id == victim_id {
-                        let is_kill = health.take_damage(damage_amount);
-                        let is_headshot = hit_zone == damage::HitZone::Head;
+                        let is_kill = health.take_damage(hit.damage_amount);
+                        let is_headshot = hit.hit_zone == damage::HitZone::Head;
 
                         info!(
                             "Hit! {:?} -> {:?} ({:?}) for {:.1} damage (headshot: {}, kill: {})",
-                            shooter_id, victim_id, hit_zone, damage_amount, is_headshot, is_kill
+                            hit.shooter_id, victim_id, hit.hit_zone, hit.damage_amount, is_headshot, is_kill
                         );
 
+                        let impact = BulletImpact {
+                            owner_id: hit.shooter_id,
+                            weapon_type: hit.weapon_type,
+                            spawn_position: hit.bullet_spawn_position,
+                            initial_velocity: hit.bullet_initial_velocity,
+                            impact_position: hit.hit_point,
+                            impact_normal: hit.hit_normal,
+                            surface: BulletImpactSurface::Player,
+                        };
+
                         // Send messages via MessageSender components
-                        for (remote_id, mut hit_sender, mut dmg_sender, mut kill_sender) in client_links.iter_mut() {
+                        for (remote_id, mut hit_sender, mut dmg_sender, mut kill_sender, mut impact_sender) in
+                            client_links.iter_mut()
+                        {
+                            // Always send impact so everyone can render hit effects.
+                            impact_sender.send::<ReliableChannel>(impact.clone());
+
                             // Send hit confirm to shooter
                             if let Some(sid) = shooter_peer_id {
                                 if remote_id.0 == sid {
                                     hit_sender.send::<ReliableChannel>(HitConfirm {
                                         target_id: peer_id_to_u64(victim_id),
-                                        damage: damage_amount,
+                                        damage: hit.damage_amount,
                                         headshot: is_headshot,
                                         kill: is_kill,
-                                        hit_zone,
+                                        hit_zone: hit.hit_zone,
                                     });
                                 }
                             }
 
                             // Send damage notification to victim
                             if remote_id.0 == victim_id {
-                                let damage_direction =
-                                    Vec3::new(spawn_x - victim_pos.x, 0.0, 0.0).normalize_or_zero();
+                                let damage_direction = Vec3::new(
+                                    hit.bullet_spawn_position.x - hit.victim_pos.x,
+                                    0.0,
+                                    hit.bullet_spawn_position.z - hit.victim_pos.z,
+                                )
+                                .normalize_or_zero();
                                 dmg_sender.send::<ReliableChannel>(DamageReceived {
                                     direction: damage_direction,
-                                    damage: damage_amount,
+                                    damage: hit.damage_amount,
                                     health_remaining: health.current,
                                 });
 
                                 if is_kill {
                                     kill_sender.send::<ReliableChannel>(PlayerKilled {
-                                        killer_id: shooter_id,
-                                        weapon: weapon_type,
+                                        killer_id: hit.shooter_id,
+                                        weapon: hit.weapon_type,
                                         headshot: is_headshot,
                                     });
                                 }
@@ -339,24 +429,39 @@ pub fn detect_bullet_hits(
             }
             Victim::Npc(npc_entity, npc_id) => {
                 if let Ok((_e, _npc, _pos, mut health)) = npcs.get_mut(npc_entity) {
-                    let is_kill = health.take_damage(damage_amount);
-                    let is_headshot = hit_zone == damage::HitZone::Head;
+                    let is_kill = health.take_damage(hit.damage_amount);
+                    let is_headshot = hit.hit_zone == damage::HitZone::Head;
 
                     info!(
                         "Hit NPC! {:?} -> npc:{} ({:?}) for {:.1} damage (headshot: {}, kill: {})",
-                        shooter_id, npc_id, hit_zone, damage_amount, is_headshot, is_kill
+                        hit.shooter_id, npc_id, hit.hit_zone, hit.damage_amount, is_headshot, is_kill
                     );
 
+                    let impact = BulletImpact {
+                        owner_id: hit.shooter_id,
+                        weapon_type: hit.weapon_type,
+                        spawn_position: hit.bullet_spawn_position,
+                        initial_velocity: hit.bullet_initial_velocity,
+                        impact_position: hit.hit_point,
+                        impact_normal: hit.hit_normal,
+                        surface: BulletImpactSurface::Npc,
+                    };
+
                     // Send hit confirm to shooter only.
-                    for (remote_id, mut hit_sender, _dmg_sender, _kill_sender) in client_links.iter_mut() {
+                    for (remote_id, mut hit_sender, _dmg_sender, _kill_sender, mut impact_sender) in
+                        client_links.iter_mut()
+                    {
+                        // Everyone gets the impact for visuals (blood, etc.)
+                        impact_sender.send::<ReliableChannel>(impact.clone());
+
                         if let Some(sid) = shooter_peer_id {
                             if remote_id.0 == sid {
                                 hit_sender.send::<ReliableChannel>(HitConfirm {
                                     target_id: npc_id,
-                                    damage: damage_amount,
+                                    damage: hit.damage_amount,
                                     headshot: is_headshot,
                                     kill: is_kill,
-                                    hit_zone,
+                                    hit_zone: hit.hit_zone,
                                 });
                             }
                         }
@@ -365,7 +470,14 @@ pub fn detect_bullet_hits(
             }
         }
         
-        commands.entity(bullet_entity).despawn();
+        // Delay despawn to avoid replication "despawn for entity that does not exist" errors.
+        commands.entity(hit.bullet_entity).insert((
+            BulletPendingDespawn {
+                despawn_at: now + despawn_delay,
+            },
+            Transform::from_translation(hit.hit_point),
+            PlayerPosition(hit.hit_point),
+        ));
     }
 }
 
@@ -388,7 +500,8 @@ fn ray_sphere_intersection(
 /// Detect bullet hits against world geometry
 pub fn detect_bullet_world_hits(
     mut commands: Commands,
-    bullets: Query<(Entity, &Bullet, &BulletPrevPosition, &Transform)>,
+    time: Res<Time>,
+    bullets: Query<(Entity, &Bullet, &BulletPrevPosition, &Transform), Without<BulletPendingDespawn>>,
     terrain: Res<WorldTerrain>,
     _players: Query<&Player>,
     mut client_links: Query<(&RemoteId, &mut MessageSender<BulletImpact>), With<ClientOf>>,
@@ -411,6 +524,9 @@ pub fn detect_bullet_world_hits(
         wall_ground_y + WALL_HEIGHT,
         WALL_Z + WALL_THICKNESS * 0.5,
     );
+
+    let now = time.elapsed_secs();
+    let despawn_delay = 0.05;
 
     for (bullet_entity, bullet, prev_pos, transform) in bullets.iter() {
         let start = prev_pos.0;
@@ -450,7 +566,14 @@ pub fn detect_bullet_world_hits(
                 sender.send::<ReliableChannel>(impact.clone());
             }
 
-            commands.entity(bullet_entity).despawn();
+            // Delay despawn to avoid replication "despawn for entity that does not exist" errors.
+            commands.entity(bullet_entity).insert((
+                BulletPendingDespawn {
+                    despawn_at: now + despawn_delay,
+                },
+                Transform::from_translation(hit_point),
+                PlayerPosition(hit_point),
+            ));
         }
     }
 }
@@ -458,12 +581,19 @@ pub fn detect_bullet_world_hits(
 /// Clean up bullets that are out of bounds or expired
 pub fn cleanup_bullets(
     mut commands: Commands,
-    bullets: Query<(Entity, &Bullet, &BulletVelocity, &Transform)>,
+    bullets: Query<(Entity, &Bullet, &BulletVelocity, &Transform, Option<&BulletPendingDespawn>)>,
     time: Res<Time>,
 ) {
     let current_time = time.elapsed_secs();
     
-    for (entity, bullet, velocity, transform) in bullets.iter() {
+    for (entity, bullet, velocity, transform, pending) in bullets.iter() {
+        if let Some(pending) = pending {
+            if current_time >= pending.despawn_at {
+                commands.entity(entity).despawn();
+            }
+            continue;
+        }
+
         if ballistics::should_despawn_bullet(
             velocity.0,
             bullet.spawn_position,
