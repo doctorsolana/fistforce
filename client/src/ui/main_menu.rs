@@ -148,19 +148,19 @@ fn load_server_presets_sync() -> (ServerPresets, ServerAddress) {
     // In packaged builds (e.g. macOS .app), assets are bundled as `assets/` next to the executable.
     let candidates = ["assets/servers.ron", "client/assets/servers.ron"];
 
-    let (path, contents) = candidates
+    let found: Option<(&str, String)> = candidates
         .iter()
         .find_map(|p| std::fs::read_to_string(p).ok().map(|c| (*p, c)));
 
-    let config: Option<ServerConfig> = contents
+    let config: Option<ServerConfig> = found
         .as_ref()
-        .and_then(|c| ron::from_str(c).ok());
+        .and_then(|(_p, c)| ron::from_str(c).ok());
     
     if let Some(config) = config {
         info!(
             "Loaded {} server presets from {}",
             config.servers.len(),
-            path.unwrap_or("<unknown>")
+            found.as_ref().map(|(p, _)| *p).unwrap_or("<unknown>")
         );
         
         // Set default server address from config
