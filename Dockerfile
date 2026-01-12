@@ -14,7 +14,10 @@ COPY Cargo.toml Cargo.lock ./
 COPY shared ./shared
 COPY server ./server
 
-# Build release binary (server only, no client needed)
+# Create a dummy client Cargo.toml to satisfy workspace
+RUN mkdir -p client && echo '[package]\nname = "client"\nversion = "0.1.0"\nedition = "2021"' > client/Cargo.toml
+
+# Build release binary (server only)
 RUN cargo build --release --package server
 
 # Runtime stage - minimal image
