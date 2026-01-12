@@ -1,10 +1,8 @@
-# Fly.io configuration for game server
 app = 'fistforce'
 primary_region = 'lhr'
 
 [build]
 
-# UDP service for game traffic (NOT http_service!)
 [[services]]
   protocol = "udp"
   internal_port = 5000

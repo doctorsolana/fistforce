@@ -14,8 +14,13 @@ COPY Cargo.toml Cargo.lock ./
 COPY shared ./shared
 COPY server ./server
 
-# Create a dummy client Cargo.toml to satisfy workspace
-RUN mkdir -p client && echo '[package]\nname = "client"\nversion = "0.1.0"\nedition = "2021"' > client/Cargo.toml
+# Create dummy client to satisfy workspace (Cargo.toml + empty main.rs)
+RUN mkdir -p client/src && \
+    echo '[package]' > client/Cargo.toml && \
+    echo 'name = "client"' >> client/Cargo.toml && \
+    echo 'version = "0.1.0"' >> client/Cargo.toml && \
+    echo 'edition = "2021"' >> client/Cargo.toml && \
+    echo 'fn main() {}' > client/src/main.rs
 
 # Build release binary (server only)
 RUN cargo build --release --package server
