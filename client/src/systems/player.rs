@@ -7,7 +7,7 @@ use bevy::animation::{AnimationClip, AnimationPlayer, AnimationTarget, Animation
 use bevy::animation::graph::{AnimationGraph, AnimationGraphHandle, AnimationNodeIndex};
 use lightyear::prelude::*;
 use lightyear::prelude::client::Connected;
-use shared::{LocalPlayer, Player, PlayerPosition, PlayerRotation, Vehicle, VehicleDriver, PLAYER_HEIGHT};
+use shared::{Health, LocalPlayer, Player, PlayerPosition, PlayerRotation, Vehicle, VehicleDriver, PLAYER_HEIGHT};
 use std::collections::HashMap;
 
 use crate::input::CameraMode;
@@ -23,6 +23,7 @@ pub struct RangerCharacterAssets {
     pub animation_graph: Handle<AnimationGraph>,
     pub idle_node: AnimationNodeIndex,
     pub walk_node: AnimationNodeIndex,
+    pub death_node: AnimationNodeIndex,
 }
 
 /// The entity we spawn `SceneRoot` onto for the player character model.
@@ -41,10 +42,11 @@ pub struct RangerAnimationRoot;
 #[derive(Component, Clone, Copy)]
 pub struct RangerRigOwner(pub Entity);
 
-/// Tracks whether the local player is currently in the "walk" state to avoid restarting every frame.
+/// Tracks player animation state
 #[derive(Component, Default)]
 pub struct RangerAnimState {
     pub walking: bool,
+    pub dead: bool,
 }
 
 // =============================================================================
@@ -68,26 +70,31 @@ pub fn setup_player_character_assets(
         .load("KayKit_Adventurers_2.0_FREE/Characters/gltf/Ranger.glb#Scene0");
 
     // Animations (rig clips)
-    // From `Rig_Medium_General.glb`: Idle_A is Animation6
+    // From `Rig_Medium_General.glb`: Idle_A is Animation6, Death_A is Animation0
     let idle_clip: Handle<AnimationClip> = asset_server.load(
         "KayKit_Adventurers_2.0_FREE/Animations/gltf/Rig_Medium/Rig_Medium_General.glb#Animation6",
+    );
+    let death_clip: Handle<AnimationClip> = asset_server.load(
+        "KayKit_Adventurers_2.0_FREE/Animations/gltf/Rig_Medium/Rig_Medium_General.glb#Animation0",
     );
     // From `Rig_Medium_MovementBasic.glb`: Walking_A is Animation8
     let walk_clip: Handle<AnimationClip> = asset_server.load(
         "KayKit_Adventurers_2.0_FREE/Animations/gltf/Rig_Medium/Rig_Medium_MovementBasic.glb#Animation8",
     );
 
-    // Build a graph with Idle + Walk (no blending yet; we just switch states).
-    let (graph, nodes) = AnimationGraph::from_clips([idle_clip.clone(), walk_clip.clone()]);
+    // Build a graph with Idle + Walk + Death
+    let (graph, nodes) = AnimationGraph::from_clips([idle_clip, walk_clip, death_clip]);
     let animation_graph = animation_graphs.add(graph);
     let idle_node = nodes[0];
     let walk_node = nodes[1];
+    let death_node = nodes[2];
 
     commands.insert_resource(RangerCharacterAssets {
         ranger_scene,
         animation_graph,
         idle_node,
         walk_node,
+        death_node,
     });
 
     info!("Loaded KayKit Ranger character assets (model + idle/walk anim clips)");
@@ -240,11 +247,13 @@ pub fn setup_ranger_rig(
 /// Drive the Ranger animations:
 /// - Everyone plays Idle by default
 /// - The *local* player switches to Walk when WASD is pressed (and not in vehicle)
+/// - Dead players play death animation
 pub fn update_ranger_animation(
     ranger_assets: Option<Res<RangerCharacterAssets>>,
     input_state: Res<crate::input::InputState>,
     mut anim_roots: Query<(&RangerRigOwner, &mut RangerAnimState, &mut AnimationPlayer), With<RangerAnimationRoot>>,
     local_players: Query<(), With<LocalPlayer>>,
+    players_with_health: Query<&Health, With<Player>>,
 ) {
     let Some(ranger_assets) = ranger_assets else { return };
 
@@ -253,6 +262,32 @@ pub fn update_ranger_animation(
             && (input_state.forward || input_state.backward || input_state.left || input_state.right);
 
     for (owner, mut state, mut player) in anim_roots.iter_mut() {
+        // Check if this player is dead
+        let is_dead = players_with_health
+            .get(owner.0)
+            .map(|h| h.is_dead())
+            .unwrap_or(false);
+        
+        // Handle death animation
+        if is_dead && !state.dead {
+            player.stop_all();
+            player.start(ranger_assets.death_node);
+            state.dead = true;
+            state.walking = false;
+            continue;
+        }
+        
+        // If dead, keep death animation (don't switch back)
+        if state.dead {
+            // Check if player respawned (health restored)
+            if !is_dead {
+                state.dead = false;
+                player.stop_all();
+                player.start(ranger_assets.idle_node).repeat();
+            }
+            continue;
+        }
+        
         // Walk animation only for the local player's rig.
         let is_local = local_players.contains(owner.0);
 

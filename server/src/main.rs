@@ -84,32 +84,32 @@ fn spawn_vehicles_once(
     
     commands.insert_resource(VehiclesSpawned);
     
-    // Spawn a test motorbike near the spawn point - drop it from 5 meters!
-    let bike_x = 5.0;
-    let bike_z = 5.0;
-    let ground_y = terrain.generator.get_height(bike_x, bike_z);
+    // Spawn two test motorbikes near the spawn point - drop them from 5 meters!
+    let bike_positions = [(5.0, 5.0), (8.0, 5.0)]; // Two bikes side by side
     
-    // Spawn HIGH above ground so it visibly falls
-    let spawn_height = ground_y + 5.0;
-    
-    commands.spawn((
-        Vehicle { vehicle_type: VehicleType::Motorbike },
-        VehicleState {
-            position: Vec3::new(bike_x, spawn_height, bike_z),
-            velocity: Vec3::ZERO,
-            heading: 0.0,
-            pitch: 0.0,
-            roll: 0.0,
-            angular_velocity_yaw: 0.0,
-            angular_velocity_pitch: 0.0,
-            angular_velocity_roll: 0.0,
-            grounded: false,
-        },
-        VehicleDriver { driver_id: None },
-        Replicate::new(ReplicationMode::SingleServer(NetworkTarget::All)),
-    ));
-
-    info!("Spawned test motorbike at ({}, {}) - dropping from height {}!", bike_x, bike_z, spawn_height);
+    for (bike_x, bike_z) in bike_positions {
+        let ground_y = terrain.generator.get_height(bike_x, bike_z);
+        let spawn_height = ground_y + 5.0;
+        
+        commands.spawn((
+            Vehicle { vehicle_type: VehicleType::Motorbike },
+            VehicleState {
+                position: Vec3::new(bike_x, spawn_height, bike_z),
+                velocity: Vec3::ZERO,
+                heading: 0.0,
+                pitch: 0.0,
+                roll: 0.0,
+                angular_velocity_yaw: 0.0,
+                angular_velocity_pitch: 0.0,
+                angular_velocity_roll: 0.0,
+                grounded: false,
+            },
+            VehicleDriver { driver_id: None },
+            Replicate::new(ReplicationMode::SingleServer(NetworkTarget::All)),
+        ));
+        
+        info!("Spawned motorbike at ({}, {}) - dropping from height {}!", bike_x, bike_z, spawn_height);
+    }
 }
 
 /// Check if server is started (run condition)
@@ -160,6 +160,7 @@ fn main() {
     app.add_systems(Update, npc::spawn_npcs_once);
 
     // Fixed tick: receive inputs, handle interactions, then simulate everyone.
+    // Split into multiple system groups to avoid tuple limit
     app.add_systems(
         FixedUpdate,
         (
@@ -175,6 +176,17 @@ fn main() {
             systems::handle_vehicle_interactions,
             systems::simulate_vehicles,
             systems::simulate_players,
+            // Death & respawn
+            systems::check_player_deaths,
+            systems::tick_respawn_timers,
+        )
+            .chain()
+            .run_if(server_is_started),
+    );
+    
+    app.add_systems(
+        FixedUpdate,
+        (
             // NPC AI
             npc::tick_npc_ai,
             // World prop collisions (server-authoritative)

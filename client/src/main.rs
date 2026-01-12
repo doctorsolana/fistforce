@@ -135,17 +135,19 @@ fn main() {
         systems::check_connection.run_if(in_state(GameState::Connecting)),
     );
 
-    // Spawn world visuals, HUD, and crosshair when entering gameplay
+    // Spawn world visuals, HUD, crosshair, and death screen when entering gameplay
     app.add_systems(OnEnter(GameState::Playing), (
         systems::spawn_world,
         crosshair::spawn_crosshair,
+        crosshair::spawn_death_screen,
         weapon_view::spawn_weapon_hud,
         weapons::spawn_debug_overlay,
     ));
     
-    // Cleanup HUD and crosshair when leaving gameplay
+    // Cleanup HUD, crosshair, and death screen when leaving gameplay
     app.add_systems(OnExit(GameState::Playing), (
         crosshair::despawn_crosshair,
+        crosshair::despawn_death_screen,
         weapon_view::despawn_weapon_hud,
         weapons::despawn_debug_overlay,
     ));
@@ -165,6 +167,7 @@ fn main() {
             input::handle_keyboard_input,
             input::update_vehicle_state,
             input::handle_mouse_input,
+            input::update_death_state,
             systems::handle_player_spawned,
             systems::handle_npc_spawned,
             systems::handle_vehicle_spawned,
@@ -210,6 +213,7 @@ fn main() {
             crosshair::update_crosshair_visibility,
             crosshair::update_crosshair_ads,
             crosshair::update_hit_markers,
+            crosshair::update_death_screen,
         )
             .run_if(in_state(GameState::Playing)),
     );

@@ -15,6 +15,15 @@ use shared::{
     Health, EquippedWeapon, WeaponType,
 };
 
+/// How long to wait before respawning (seconds)
+const RESPAWN_TIME: f32 = 4.0;
+
+/// Component added to dead players while waiting to respawn
+#[derive(Component)]
+pub struct RespawnTimer {
+    pub time_remaining: f32,
+}
+
 /// Stores the latest input for each connected client.
 /// We use PeerId in Lightyear 0.25
 #[derive(Resource, Default)]
@@ -205,12 +214,19 @@ pub fn handle_vehicle_interactions(
 pub fn simulate_players(
     terrain: Res<WorldTerrain>,
     inputs: Res<ClientInputs>,
-    mut players: Query<(&Player, &mut PlayerPosition, &mut PlayerRotation, &mut PlayerVelocity, Option<&InVehicle>)>,
+    mut players: Query<(&Player, &Health, &mut PlayerPosition, &mut PlayerRotation, &mut PlayerVelocity, Option<&InVehicle>, Option<&RespawnTimer>)>,
     vehicles: Query<&VehicleState>,
 ) {
     let dt = 1.0 / FIXED_TIMESTEP_HZ as f32;
 
-    for (player, mut position, mut rotation, mut velocity, in_vehicle) in players.iter_mut() {
+    for (player, health, mut position, mut rotation, mut velocity, in_vehicle, respawn_timer) in players.iter_mut() {
+        // Skip dead players - don't process their input
+        if !is_player_alive(health, respawn_timer) {
+            // Dead players just stay where they are (no gravity, no movement)
+            velocity.0 = Vec3::ZERO;
+            continue;
+        }
+        
         if let Some(in_veh) = in_vehicle {
             if let Ok(veh_state) = vehicles.get(in_veh.vehicle_entity) {
                 position.0 = veh_state.position;
@@ -265,7 +281,7 @@ pub fn simulate_vehicles(
 }
 
 /// Helper to convert PeerId to u64 for driver tracking
-fn peer_id_to_u64(peer_id: PeerId) -> u64 {
+pub fn peer_id_to_u64(peer_id: PeerId) -> u64 {
     match peer_id {
         PeerId::Netcode(id) => id,
         PeerId::Steam(id) => id,
@@ -280,4 +296,73 @@ fn peer_id_to_u64(peer_id: PeerId) -> u64 {
         },
         PeerId::Server => 0,
     }
+}
+
+// =============================================================================
+// DEATH & RESPAWN
+// =============================================================================
+
+/// Check for dead players and add respawn timer
+pub fn check_player_deaths(
+    mut commands: Commands,
+    players: Query<(Entity, &Player, &Health), (Without<RespawnTimer>,)>,
+    mut vehicles: Query<&mut VehicleDriver>,
+) {
+    for (entity, player, health) in players.iter() {
+        if health.is_dead() {
+            info!("Player {:?} died! Starting respawn timer", player.client_id);
+            
+            // Add respawn timer
+            commands.entity(entity).insert(RespawnTimer {
+                time_remaining: RESPAWN_TIME,
+            });
+            
+            // Eject from any vehicle
+            for mut driver in vehicles.iter_mut() {
+                if driver.driver_id == Some(peer_id_to_u64(player.client_id)) {
+                    driver.driver_id = None;
+                }
+            }
+            
+            // Remove InVehicle component if present
+            commands.entity(entity).remove::<InVehicle>();
+        }
+    }
+}
+
+/// Tick respawn timers and respawn players when ready
+pub fn tick_respawn_timers(
+    mut commands: Commands,
+    terrain: Res<WorldTerrain>,
+    mut players: Query<(Entity, &Player, &mut Health, &mut PlayerPosition, &mut PlayerVelocity, &mut RespawnTimer)>,
+) {
+    let dt = 1.0 / FIXED_TIMESTEP_HZ as f32;
+    
+    for (entity, player, mut health, mut position, mut velocity, mut timer) in players.iter_mut() {
+        timer.time_remaining -= dt;
+        
+        if timer.time_remaining <= 0.0 {
+            info!("Respawning player {:?}", player.client_id);
+            
+            // Reset health
+            health.current = health.max;
+            
+            // Reset position to spawn point
+            let spawn_x = SPAWN_POSITION[0];
+            let spawn_z = SPAWN_POSITION[2];
+            let ground_y = terrain.generator.get_height(spawn_x, spawn_z);
+            position.0 = Vec3::new(spawn_x, ground_y + ground_clearance_center(), spawn_z);
+            
+            // Reset velocity
+            velocity.0 = Vec3::ZERO;
+            
+            // Remove respawn timer
+            commands.entity(entity).remove::<RespawnTimer>();
+        }
+    }
+}
+
+/// Skip input processing for dead players
+pub fn is_player_alive(health: &Health, respawn_timer: Option<&RespawnTimer>) -> bool {
+    !health.is_dead() && respawn_timer.is_none()
 }

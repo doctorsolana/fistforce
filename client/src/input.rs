@@ -5,7 +5,7 @@
 use bevy::input::mouse::MouseMotion;
 use bevy::prelude::*;
 use lightyear::prelude::*;
-use shared::{InputChannel, PlayerInput, VehicleInput, VehicleDriver, LocalPlayer, Player, MOUSE_SENSITIVITY};
+use shared::{Health, InputChannel, PlayerInput, VehicleInput, VehicleDriver, LocalPlayer, Player, MOUSE_SENSITIVITY};
 use std::f32::consts::FRAC_PI_2;
 
 use crate::states::GameState;
@@ -48,6 +48,9 @@ pub struct InputState {
     
     /// Right-click = Aim Down Sights
     pub aiming: bool,
+    
+    /// True when local player is dead (disables movement input)
+    pub is_dead: bool,
 }
 
 impl Default for InputState {
@@ -68,6 +71,7 @@ impl Default for InputState {
             vehicle_look_yaw: 0.0,
             vehicle_look_pitch: 0.0,
             aiming: false,
+            is_dead: false,
         }
     }
 }
@@ -179,6 +183,26 @@ pub fn update_vehicle_state(
     input_state.in_vehicle = is_driving;
 }
 
+/// Check if local player is dead (updates InputState.is_dead)
+pub fn update_death_state(
+    mut input_state: ResMut<InputState>,
+    local_player: Query<&Health, With<LocalPlayer>>,
+) {
+    let was_dead = input_state.is_dead;
+    input_state.is_dead = local_player
+        .iter()
+        .next()
+        .map(|h| h.is_dead())
+        .unwrap_or(false);
+    
+    // Log state changes
+    if input_state.is_dead && !was_dead {
+        info!("Local player died!");
+    } else if !input_state.is_dead && was_dead {
+        info!("Local player respawned!");
+    }
+}
+
 /// Send input to server
 pub fn send_input_to_server(
     input_state: Res<InputState>,
@@ -219,16 +243,16 @@ pub fn send_input_to_server(
         interact: input_state.interact_just_pressed,
     };
 
-    if game_state.get() == &GameState::Paused {
+    // Disable all movement input when dead or paused
+    if game_state.get() == &GameState::Paused || input_state.is_dead {
         input.forward = false;
         input.backward = false;
         input.left = false;
         input.right = false;
         input.jump = false;
         input.interact = false;
-    }
-
-    if in_vehicle && game_state.get() != &GameState::Paused {
+        input.vehicle_input = None;
+    } else if in_vehicle {
         input.vehicle_input = Some(VehicleInput {
             throttle: if input_state.forward { 1.0 } else { 0.0 },
             brake: if input_state.backward { 1.0 } else { 0.0 },

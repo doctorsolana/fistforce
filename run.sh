@@ -12,8 +12,15 @@ BLUE='\033[0;34m'
 YELLOW='\033[0;33m'
 NC='\033[0m' # No Color
 
+# Kill any existing server processes to avoid "Address already in use"
+cleanup_server() {
+    pkill -f "target.*release/server" 2>/dev/null || true
+    sleep 0.5
+}
+
 case $MODE in
     server)
+        cleanup_server
         echo -e "${GREEN}Starting server...${NC}"
         cargo run -p server --release
         ;;
@@ -22,6 +29,7 @@ case $MODE in
         cargo run -p client --release
         ;;
     both)
+        cleanup_server
         echo -e "${GREEN}Starting server in background...${NC}"
         cargo run -p server --release &
         SERVER_PID=$!
@@ -37,6 +45,7 @@ case $MODE in
         kill $SERVER_PID 2>/dev/null || true
         ;;
     multi)
+        cleanup_server
         echo -e "${GREEN}Starting server in background...${NC}"
         cargo run -p server --release &
         SERVER_PID=$!

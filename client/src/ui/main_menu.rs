@@ -1,11 +1,12 @@
 //! Main menu UI
 //!
-//! Updated for Bevy 0.17
+//! Updated for Bevy 0.17 with server preset dropdown
 
 use bevy::prelude::*;
 use bevy::app::AppExit;
 use bevy::input::keyboard::{Key, KeyboardInput};
 use bevy::input::ButtonState;
+use serde::Deserialize;
 
 use crate::states::GameState;
 use super::styles::*;
@@ -15,8 +16,11 @@ pub struct MainMenuPlugin;
 
 impl Plugin for MainMenuPlugin {
     fn build(&self, app: &mut App) {
-        // Initialize server address with default
-        app.init_resource::<ServerAddress>();
+        // Load server presets synchronously during plugin build (before any systems run)
+        let (presets, server_address) = load_server_presets_sync();
+        app.insert_resource(presets);
+        app.insert_resource(server_address);
+        app.init_resource::<DropdownState>();
         
         app.add_systems(OnEnter(GameState::MainMenu), spawn_main_menu);
         app.add_systems(OnExit(GameState::MainMenu), despawn_main_menu);
@@ -29,9 +33,37 @@ impl Plugin for MainMenuPlugin {
                 handle_ip_input_focus,
                 handle_ip_keyboard_input,
                 update_ip_display,
+                handle_dropdown_toggle,
+                handle_dropdown_selection,
+                update_dropdown_display,
             ).run_if(in_state(GameState::MainMenu)),
         );
     }
+}
+
+// =============================================================================
+// CONFIG TYPES
+// =============================================================================
+
+/// A single server entry from the config file
+#[derive(Debug, Clone, Deserialize)]
+pub struct ServerEntry {
+    pub name: String,
+    pub ip: String,
+}
+
+/// The servers.ron config file structure
+#[derive(Debug, Clone, Deserialize)]
+pub struct ServerConfig {
+    pub servers: Vec<ServerEntry>,
+    pub default_index: usize,
+}
+
+/// Resource holding loaded server presets
+#[derive(Resource, Default)]
+pub struct ServerPresets {
+    pub entries: Vec<ServerEntry>,
+    pub selected_index: Option<usize>,
 }
 
 /// Resource holding the server address to connect to
@@ -49,6 +81,16 @@ impl Default for ServerAddress {
         }
     }
 }
+
+/// Dropdown open/closed state
+#[derive(Resource, Default)]
+pub struct DropdownState {
+    pub expanded: bool,
+}
+
+// =============================================================================
+// COMPONENTS
+// =============================================================================
 
 /// Marker for the main menu root
 #[derive(Component)]
@@ -78,11 +120,74 @@ enum MenuButton {
     Exit,
 }
 
+/// Dropdown toggle button
+#[derive(Component)]
+struct DropdownToggle;
+
+/// Dropdown text display (shows selected preset name)
+#[derive(Component)]
+struct DropdownText;
+
+/// Container for dropdown options (shown when expanded)
+#[derive(Component)]
+struct DropdownOptions;
+
+/// A single dropdown option
+#[derive(Component)]
+struct DropdownOption {
+    index: usize,
+}
+
+// =============================================================================
+// STARTUP: LOAD CONFIG
+// =============================================================================
+
+/// Load server presets synchronously (called during plugin build)
+fn load_server_presets_sync() -> (ServerPresets, ServerAddress) {
+    let path = "client/assets/servers.ron";
+    
+    let config: Option<ServerConfig> = std::fs::read_to_string(path)
+        .ok()
+        .and_then(|contents| ron::from_str(&contents).ok());
+    
+    if let Some(config) = config {
+        info!("Loaded {} server presets from servers.ron", config.servers.len());
+        
+        // Set default server address from config
+        let ip = config.servers.get(config.default_index)
+            .map(|e| e.ip.clone())
+            .unwrap_or_else(|| "127.0.0.1".to_string());
+        
+        (
+            ServerPresets {
+                entries: config.servers,
+                selected_index: Some(config.default_index),
+            },
+            ServerAddress {
+                ip,
+                port: SERVER_PORT,
+            },
+        )
+    } else {
+        warn!("Could not load servers.ron, using defaults");
+        (ServerPresets::default(), ServerAddress::default())
+    }
+}
+
+// =============================================================================
+// MENU SPAWN
+// =============================================================================
+
 fn spawn_main_menu(
     mut commands: Commands,
     asset_server: Res<AssetServer>,
     server_address: Res<ServerAddress>,
+    presets: Res<ServerPresets>,
+    mut dropdown_state: ResMut<DropdownState>,
 ) {
+    // Reset dropdown state when entering menu
+    dropdown_state.expanded = false;
+    
     // Load the logo
     let logo_handle: Handle<Image> = asset_server.load("ui/fistforce.png");
 
@@ -182,9 +287,14 @@ fn spawn_main_menu(
                             ));
                         });
                     
+                    // Server preset dropdown (only if we have presets)
+                    if !presets.entries.is_empty() {
+                        spawn_dropdown(ip_section, &presets);
+                    }
+                    
                     // Helper text
                     ip_section.spawn((
-                        Text::new("Click to edit • Use your LAN IP for multiplayer"),
+                        Text::new("Click to edit • Select preset below"),
                         TextFont {
                             font_size: 12.0,
                             ..default()
@@ -230,7 +340,116 @@ fn spawn_main_menu(
         });
 }
 
-fn spawn_button(parent: &mut bevy::ecs::hierarchy::ChildSpawnerCommands<'_>, text: &str, action: MenuButton) {
+fn spawn_dropdown(parent: &mut ChildSpawnerCommands<'_>, presets: &ServerPresets) {
+    let selected_name = presets.selected_index
+        .and_then(|i| presets.entries.get(i))
+        .map(|e| e.name.as_str())
+        .unwrap_or("Custom");
+    
+    // Dropdown container (relative positioning for absolute children)
+    parent
+        .spawn(Node {
+            flex_direction: FlexDirection::Column,
+            align_items: AlignItems::Center,
+            margin: UiRect::top(Val::Px(8.0)),
+            ..default()
+        })
+        .with_children(|dropdown_container| {
+            // Toggle button (always visible)
+            dropdown_container
+                .spawn((
+                    DropdownToggle,
+                    Button,
+                    Node {
+                        width: Val::Px(280.0),
+                        height: Val::Px(38.0),
+                        justify_content: JustifyContent::SpaceBetween,
+                        align_items: AlignItems::Center,
+                        border: UiRect::all(Val::Px(1.0)),
+                        padding: UiRect::horizontal(Val::Px(12.0)),
+                        ..default()
+                    },
+                    BackgroundColor(Color::srgb(0.10, 0.09, 0.07)),
+                    BorderColor::from(BUTTON_BORDER),
+                    BorderRadius::all(Val::Px(4.0)),
+                ))
+                .with_children(|toggle| {
+                    // Selected name
+                    toggle.spawn((
+                        DropdownText,
+                        Text::new(selected_name),
+                        TextFont {
+                            font_size: 16.0,
+                            ..default()
+                        },
+                        TextColor(TEXT_COLOR),
+                    ));
+                    
+                    // Arrow indicator
+                    toggle.spawn((
+                        Text::new("▼"),
+                        TextFont {
+                            font_size: 12.0,
+                            ..default()
+                        },
+                        TextColor(TEXT_MUTED),
+                    ));
+                });
+            
+            // Options container (hidden by default, shown when expanded)
+            dropdown_container
+                .spawn((
+                    DropdownOptions,
+                    Node {
+                        flex_direction: FlexDirection::Column,
+                        width: Val::Px(280.0),
+                        border: UiRect::all(Val::Px(1.0)),
+                        display: Display::None, // Hidden by default
+                        ..default()
+                    },
+                    BackgroundColor(Color::srgb(0.10, 0.09, 0.07)),
+                    BorderColor::from(BUTTON_BORDER),
+                    BorderRadius::all(Val::Px(4.0)),
+                    ZIndex(10), // On top of other elements
+                ))
+                .with_children(|options| {
+                    for (i, entry) in presets.entries.iter().enumerate() {
+                        let is_selected = presets.selected_index == Some(i);
+                        
+                        options
+                            .spawn((
+                                DropdownOption { index: i },
+                                Button,
+                                Node {
+                                    width: Val::Percent(100.0),
+                                    height: Val::Px(36.0),
+                                    justify_content: JustifyContent::FlexStart,
+                                    align_items: AlignItems::Center,
+                                    padding: UiRect::horizontal(Val::Px(12.0)),
+                                    ..default()
+                                },
+                                BackgroundColor(if is_selected {
+                                    Color::srgb(0.18, 0.14, 0.10)
+                                } else {
+                                    Color::srgb(0.10, 0.09, 0.07)
+                                }),
+                            ))
+                            .with_children(|option| {
+                                option.spawn((
+                                    Text::new(&entry.name),
+                                    TextFont {
+                                        font_size: 15.0,
+                                        ..default()
+                                    },
+                                    TextColor(if is_selected { ACCENT_COLOR } else { TEXT_COLOR }),
+                                ));
+                            });
+                    }
+                });
+        });
+}
+
+fn spawn_button(parent: &mut ChildSpawnerCommands<'_>, text: &str, action: MenuButton) {
     parent
         .spawn((
             Button,
@@ -266,10 +485,14 @@ fn despawn_main_menu(mut commands: Commands, query: Query<Entity, With<MainMenuR
     }
 }
 
+// =============================================================================
+// INTERACTIONS
+// =============================================================================
+
 fn button_interactions(
     mut buttons: Query<
         (&Interaction, &mut BackgroundColor, &mut BorderColor),
-        (Changed<Interaction>, With<Button>),
+        (Changed<Interaction>, With<Button>, Without<IpInputField>, Without<DropdownToggle>, Without<DropdownOption>),
     >,
 ) {
     for (interaction, mut bg_color, mut border_color) in buttons.iter_mut() {
@@ -324,6 +547,7 @@ fn animate_logo(time: Res<Time>, mut logos: Query<(&mut LogoImage, &mut Transfor
 fn handle_ip_input_focus(
     mut input_fields: Query<(&Interaction, &mut IpInputField, &mut BorderColor)>,
     mouse_button: Res<ButtonInput<MouseButton>>,
+    mut presets: ResMut<ServerPresets>,
 ) {
     let mut any_clicked = false;
     
@@ -332,6 +556,8 @@ fn handle_ip_input_focus(
             field.focused = true;
             any_clicked = true;
             *border = BorderColor::from(ACCENT_COLOR);
+            // When manually editing, deselect preset
+            presets.selected_index = None;
         }
     }
     
@@ -373,13 +599,13 @@ fn handle_ip_keyboard_input(
                 field.focused = false;
             }
             Key::Character(c) => {
-                // Only allow valid IP characters: digits and dots
+                // Allow valid IP/hostname characters: alphanumeric, dots, dashes
                 let c = c.as_str();
                 if c.len() == 1 {
                     let ch = c.chars().next().unwrap();
-                    if ch.is_ascii_digit() || ch == '.' {
-                        // Limit length to reasonable IP address
-                        if server_address.ip.len() < 15 {
+                    if ch.is_ascii_alphanumeric() || ch == '.' || ch == '-' {
+                        // Limit length to reasonable hostname
+                        if server_address.ip.len() < 63 {
                             server_address.ip.push(ch);
                         }
                     }
@@ -412,5 +638,107 @@ fn update_ip_display(
         
         let cursor = if show_cursor { "│" } else { "" };
         **text = format!("{}{}", display, cursor);
+    }
+}
+
+// =============================================================================
+// DROPDOWN LOGIC
+// =============================================================================
+
+/// Toggle dropdown open/closed when clicking the toggle button
+fn handle_dropdown_toggle(
+    toggle_query: Query<&Interaction, (Changed<Interaction>, With<DropdownToggle>)>,
+    mut dropdown_state: ResMut<DropdownState>,
+    mut options_query: Query<&mut Node, With<DropdownOptions>>,
+    mouse_button: Res<ButtonInput<MouseButton>>,
+    option_interactions: Query<&Interaction, With<DropdownOption>>,
+    toggle_interactions: Query<&Interaction, With<DropdownToggle>>,
+) {
+    // Toggle on click
+    for interaction in toggle_query.iter() {
+        if *interaction == Interaction::Pressed {
+            dropdown_state.expanded = !dropdown_state.expanded;
+        }
+    }
+    
+    // Close dropdown when clicking outside (but not on options or toggle)
+    if mouse_button.just_pressed(MouseButton::Left) {
+        let clicking_option = option_interactions.iter().any(|i| *i == Interaction::Pressed);
+        let clicking_toggle = toggle_interactions.iter().any(|i| *i == Interaction::Pressed);
+        
+        if dropdown_state.expanded && !clicking_option && !clicking_toggle {
+            dropdown_state.expanded = false;
+        }
+    }
+    
+    // Update visibility
+    for mut node in options_query.iter_mut() {
+        node.display = if dropdown_state.expanded {
+            Display::Flex
+        } else {
+            Display::None
+        };
+    }
+}
+
+/// Handle clicking on a dropdown option
+fn handle_dropdown_selection(
+    options_query: Query<(&Interaction, &DropdownOption), Changed<Interaction>>,
+    mut server_address: ResMut<ServerAddress>,
+    mut presets: ResMut<ServerPresets>,
+    mut dropdown_state: ResMut<DropdownState>,
+) {
+    for (interaction, option) in options_query.iter() {
+        if *interaction == Interaction::Pressed {
+            if let Some(entry) = presets.entries.get(option.index).cloned() {
+                // Update server address
+                server_address.ip = entry.ip.clone();
+                info!("Selected server preset: {} ({})", entry.name, entry.ip);
+                
+                // Update selected index
+                presets.selected_index = Some(option.index);
+                
+                // Close dropdown
+                dropdown_state.expanded = false;
+            }
+        }
+    }
+}
+
+/// Update dropdown display text based on selection
+fn update_dropdown_display(
+    presets: Res<ServerPresets>,
+    mut text_query: Query<&mut Text, With<DropdownText>>,
+    mut options_query: Query<(&DropdownOption, &mut BackgroundColor, &Children)>,
+    mut text_colors: Query<&mut TextColor>,
+) {
+    // Update toggle text
+    let selected_name = presets.selected_index
+        .and_then(|i| presets.entries.get(i))
+        .map(|e| e.name.as_str())
+        .unwrap_or("Custom");
+    
+    for mut text in text_query.iter_mut() {
+        if **text != selected_name {
+            **text = selected_name.to_string();
+        }
+    }
+    
+    // Update option highlighting
+    for (option, mut bg, children) in options_query.iter_mut() {
+        let is_selected = presets.selected_index == Some(option.index);
+        
+        *bg = BackgroundColor(if is_selected {
+            Color::srgb(0.18, 0.14, 0.10)
+        } else {
+            Color::srgb(0.10, 0.09, 0.07)
+        });
+        
+        // Update text color
+        for child in children.iter() {
+            if let Ok(mut color) = text_colors.get_mut(child) {
+                *color = TextColor(if is_selected { ACCENT_COLOR } else { TEXT_COLOR });
+            }
+        }
     }
 }

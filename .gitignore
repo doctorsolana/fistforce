@@ -15,6 +15,7 @@
 .LSOverride
 
 # Build artifacts
+/dist/
 *.app
 *.dmg
 
