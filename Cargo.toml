@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["shared", "server", "client"]
+members = ["shared", "server", "client", "tools/collider_baker"]
 
 [workspace.dependencies]
 bevy = { version = "0.17", features = ["vorbis"] }

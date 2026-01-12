@@ -8,6 +8,7 @@ mod crosshair;
 mod input;
 mod props;
 mod states;
+mod structures;
 mod systems;
 mod terrain;
 mod ui;
@@ -96,6 +97,9 @@ fn main() {
     
     // Environmental props (rocks, trees, etc.)
     app.add_plugins(props::PropsPlugin);
+    
+    // Desert settlement structures
+    app.add_plugins(structures::StructuresPlugin);
 
     // UI plugins
     app.add_plugins(ui::MainMenuPlugin);
@@ -109,6 +113,7 @@ fn main() {
         systems::setup_rendering,
         systems::setup_particle_assets,
         weapons::setup_weapon_visual_assets,
+        weapons::setup_weapon_audio_assets,
         systems::setup_player_character_assets,
         systems::setup_npc_assets,
     ));
@@ -116,6 +121,7 @@ fn main() {
     // Weapon debug mode resource
     app.init_resource::<WeaponDebugMode>();
     app.init_resource::<weapons::ShootingState>();
+    app.init_resource::<weapons::ReloadState>();
     app.init_resource::<weapons::DebugBulletTrails>();
     app.init_resource::<weapon_view::CurrentWeaponView>();
 
@@ -213,7 +219,9 @@ fn main() {
         (
             weapons::handle_shoot_input,
             weapons::handle_reload_input,
+            weapons::play_weapon_sounds,
             weapons::handle_bullet_spawned,
+            weapons::recover_recoil,
         )
             .run_if(in_state(GameState::Playing)),
     );

@@ -6,7 +6,8 @@
 use bevy::prelude::*;
 use bevy::audio::Volume;
 
-use shared::{terrain::Biome, LocalPlayer, PlayerPosition, WorldTerrain};
+use shared::{terrain::Biome, LocalPlayer, PlayerPosition, WorldTerrain, VehicleState, VehicleDriver, Vehicle};
+use lightyear::prelude::*;
 
 use crate::input::InputState;
 use crate::states::GameState;
@@ -17,6 +18,9 @@ use crate::weapons::ShootingState;
 pub struct GameAudio {
     pub gun_shot: Handle<AudioSource>,
     pub desert_ambient: Handle<AudioSource>,
+    // Vehicle sounds
+    pub hover_idle: Handle<AudioSource>,
+    pub bike_cruise: Handle<AudioSource>,
 }
 
 /// Marker for ambient sound entities
@@ -26,6 +30,26 @@ pub struct AmbientSound;
 /// Marker for one-shot gunshot audio entities
 #[derive(Component)]
 pub struct GunshotSound;
+
+// =============================================================================
+// VEHICLE AUDIO
+// =============================================================================
+
+/// Marker for vehicle idle hover sound
+#[derive(Component)]
+pub struct VehicleIdleSound;
+
+/// Marker for vehicle cruise/driving sound
+#[derive(Component)]
+pub struct VehicleCruiseSound;
+
+/// Track vehicle audio state
+#[derive(Resource, Default)]
+pub struct VehicleAudioState {
+    pub sounds_spawned: bool,
+    /// Track if player was in vehicle last frame (for detecting enter/exit)
+    pub was_in_vehicle: bool,
+}
 
 /// Track audio state
 #[derive(Resource, Default)]
@@ -42,14 +66,22 @@ pub fn setup_audio(mut commands: Commands, asset_server: Res<AssetServer>) {
     let gun_shot = asset_server.load("audio/sfx/gun_shot.ogg");
     let desert_ambient = asset_server.load("audio/ambient/walking_desert.ogg");
     
+    // Vehicle sounds
+    let hover_idle = asset_server.load("audio/sfx/hover_idle_loop.ogg");
+    let bike_cruise = asset_server.load("audio/sfx/bike_cruise_loop.ogg");
+    
     info!("Audio handles created: gun_shot={:?}, desert_ambient={:?}", gun_shot, desert_ambient);
+    info!("Vehicle audio handles: hover_idle={:?}, bike_cruise={:?}", hover_idle, bike_cruise);
     
     commands.insert_resource(GameAudio {
         gun_shot,
         desert_ambient,
+        hover_idle,
+        bike_cruise,
     });
     
     commands.init_resource::<AudioState>();
+    commands.init_resource::<VehicleAudioState>();
 }
 
 /// Check if audio assets are loaded
@@ -198,13 +230,166 @@ pub fn stop_ambient_sounds(
     audio_state.ambient_spawned = false;
 }
 
+// =============================================================================
+// VEHICLE AUDIO SYSTEMS
+// =============================================================================
+
+/// Manage vehicle audio: spawn sounds when entering, despawn when exiting
+pub fn manage_vehicle_audio(
+    mut commands: Commands,
+    audio: Option<Res<GameAudio>>,
+    audio_state: Res<AudioState>,
+    mut vehicle_audio_state: ResMut<VehicleAudioState>,
+    input_state: Res<InputState>,
+    idle_sounds: Query<Entity, With<VehicleIdleSound>>,
+    cruise_sounds: Query<Entity, With<VehicleCruiseSound>>,
+) {
+    // Don't do anything until assets are ready
+    if !audio_state.assets_ready {
+        return;
+    }
+    
+    let Some(audio) = audio else { return };
+    
+    let in_vehicle = input_state.in_vehicle;
+    let was_in_vehicle = vehicle_audio_state.was_in_vehicle;
+    
+    // Detect entering vehicle
+    if in_vehicle && !was_in_vehicle {
+        info!("Entering vehicle - spawning bike audio loops");
+        
+        // Spawn idle sound (starts playing)
+        commands.spawn((
+            VehicleIdleSound,
+            AudioPlayer::new(audio.hover_idle.clone()),
+            PlaybackSettings::LOOP.with_volume(Volume::Linear(0.6)),
+        ));
+        
+        // Spawn cruise sound (starts at zero volume, we'll crossfade in)
+        commands.spawn((
+            VehicleCruiseSound,
+            AudioPlayer::new(audio.bike_cruise.clone()),
+            PlaybackSettings::LOOP.with_volume(Volume::Linear(0.0)),
+        ));
+        
+        vehicle_audio_state.sounds_spawned = true;
+    }
+    
+    // Detect exiting vehicle
+    if !in_vehicle && was_in_vehicle {
+        info!("Exiting vehicle - despawning bike audio");
+        
+        for entity in idle_sounds.iter() {
+            commands.entity(entity).despawn();
+        }
+        for entity in cruise_sounds.iter() {
+            commands.entity(entity).despawn();
+        }
+        
+        vehicle_audio_state.sounds_spawned = false;
+    }
+    
+    vehicle_audio_state.was_in_vehicle = in_vehicle;
+}
+
+/// Update vehicle audio: crossfade between idle/cruise and modulate pitch based on speed
+pub fn update_vehicle_audio(
+    input_state: Res<InputState>,
+    vehicle_audio_state: Res<VehicleAudioState>,
+    // Query for our local client to find which vehicle we're driving
+    client_query: Query<&LocalId, (With<crate::GameClient>, With<Connected>)>,
+    vehicles: Query<(&VehicleDriver, &VehicleState), With<Vehicle>>,
+    // Use Without<T> to make these queries disjoint (avoids Bevy B0001 conflict)
+    mut idle_sink: Query<&mut AudioSink, (With<VehicleIdleSound>, Without<VehicleCruiseSound>)>,
+    mut cruise_sink: Query<&mut AudioSink, (With<VehicleCruiseSound>, Without<VehicleIdleSound>)>,
+) {
+    // Only process if we're in a vehicle with sounds spawned
+    if !input_state.in_vehicle || !vehicle_audio_state.sounds_spawned {
+        return;
+    }
+    
+    // Get our peer ID
+    let Some(our_peer_id) = client_query.iter().next().map(|id| crate::camera::peer_id_to_u64(id.0)) else {
+        return;
+    };
+    
+    // Find the vehicle we're driving
+    let Some((_, vehicle_state)) = vehicles.iter().find(|(driver, _)| driver.driver_id == Some(our_peer_id)) else {
+        return;
+    };
+    
+    // Calculate speed (horizontal only for audio purposes)
+    let horizontal_velocity = Vec3::new(vehicle_state.velocity.x, 0.0, vehicle_state.velocity.z);
+    let speed = horizontal_velocity.length();
+    
+    // Max speed from vehicle constants (~45 m/s)
+    const MAX_SPEED: f32 = 45.0;
+    let speed_ratio = (speed / MAX_SPEED).clamp(0.0, 1.0);
+    
+    // === CROSSFADE LOGIC ===
+    // Idle: full volume at 0 speed, fades out by ~30% max speed
+    // Cruise: silent at 0, fades in from ~10% to full at ~40% max speed
+    
+    let idle_volume = if speed_ratio < 0.3 {
+        // Full to fading: 1.0 at 0%, ~0.0 at 30%
+        1.0 - (speed_ratio / 0.3)
+    } else {
+        0.0
+    };
+    
+    let cruise_volume = if speed_ratio < 0.1 {
+        0.0
+    } else if speed_ratio < 0.4 {
+        // Fade in from 10% to 40% speed
+        (speed_ratio - 0.1) / 0.3
+    } else {
+        1.0
+    };
+    
+    // === PITCH MODULATION ===
+    // Idle: subtle pitch variation 0.9x to 1.05x
+    // Cruise: 0.85x at slow speeds up to 1.25x at max speed
+    
+    let idle_pitch = 0.9 + speed_ratio * 0.15; // 0.9 to 1.05
+    let cruise_pitch = 0.85 + speed_ratio * 0.4; // 0.85 to 1.25
+    
+    // Apply to idle sound
+    if let Ok(mut sink) = idle_sink.single_mut() {
+        sink.set_volume(Volume::Linear(idle_volume * 0.6)); // Base volume * crossfade
+        sink.set_speed(idle_pitch);
+    }
+    
+    // Apply to cruise sound
+    if let Ok(mut sink) = cruise_sink.single_mut() {
+        sink.set_volume(Volume::Linear(cruise_volume * 0.7)); // Base volume * crossfade
+        sink.set_speed(cruise_pitch);
+    }
+}
+
+/// Stop vehicle sounds when leaving gameplay
+pub fn stop_vehicle_sounds(
+    mut commands: Commands,
+    mut vehicle_audio_state: ResMut<VehicleAudioState>,
+    idle_sounds: Query<Entity, With<VehicleIdleSound>>,
+    cruise_sounds: Query<Entity, With<VehicleCruiseSound>>,
+) {
+    for entity in idle_sounds.iter() {
+        commands.entity(entity).despawn();
+    }
+    for entity in cruise_sounds.iter() {
+        commands.entity(entity).despawn();
+    }
+    vehicle_audio_state.sounds_spawned = false;
+    vehicle_audio_state.was_in_vehicle = false;
+}
+
 /// Audio plugin for easy integration
 pub struct GameAudioPlugin;
 
 impl Plugin for GameAudioPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(Startup, setup_audio);
-        app.add_systems(OnExit(GameState::Playing), stop_ambient_sounds);
+        app.add_systems(OnExit(GameState::Playing), (stop_ambient_sounds, stop_vehicle_sounds));
         // Split systems to avoid tuple size limits
         app.add_systems(
             Update,
@@ -221,6 +406,15 @@ impl Plugin for GameAudioPlugin {
         app.add_systems(
             Update,
             play_gunshot_sfx.run_if(in_state(GameState::Playing)),
+        );
+        // Vehicle audio systems
+        app.add_systems(
+            Update,
+            manage_vehicle_audio.run_if(in_state(GameState::Playing)),
+        );
+        app.add_systems(
+            Update,
+            update_vehicle_audio.run_if(in_state(GameState::Playing)),
         );
     }
 }

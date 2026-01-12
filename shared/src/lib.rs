@@ -1,19 +1,25 @@
 pub mod components;
+pub mod colliders;
 pub mod movement;
 pub mod npc;
 pub mod physics;
 pub mod player;
 pub mod protocol;
+pub mod props;
+pub mod structures;
 pub mod terrain;
 pub mod vehicle;
 pub mod weapons;
 
 pub use components::*;
+pub use colliders::*;
 pub use movement::*;
 pub use npc::*;
 pub use physics::*;
 pub use player::*;
 pub use protocol::*;
+pub use props::*;
+pub use structures::*;
 pub use terrain::*;
 pub use vehicle::*;
 pub use weapons::*;

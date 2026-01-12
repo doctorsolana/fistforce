@@ -6,6 +6,7 @@ mod systems;
 mod npc;
 mod weapons;
 mod world;
+mod colliders;
 
 use bevy::prelude::*;
 use bevy::app::ScheduleRunnerPlugin;
@@ -15,9 +16,9 @@ use lightyear::prelude::server::*;
 use shared::{
     protocol::*, ProtocolPlugin, WorldTerrain, 
     Vehicle, VehicleType, VehicleState, VehicleDriver,
-    PRIVATE_KEY, PROTOCOL_ID, SERVER_PORT,
+    PRIVATE_KEY, PROTOCOL_ID, SERVER_PORT, get_server_bind_addr,
 };
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::net::SocketAddr;
 
 use systems::ClientInputs;
 
@@ -31,9 +32,14 @@ struct VehiclesSpawned;
 
 /// Spawn the server entity with all required networking components
 fn spawn_server(mut commands: Commands) {
-    let server_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), SERVER_PORT);
+    let bind_addr = get_server_bind_addr();
+    let server_addr: SocketAddr = format!("{}:{}", bind_addr, SERVER_PORT)
+        .parse()
+        .expect("Invalid server bind address");
     
-    info!("Spawning server entity, binding to {:?}", server_addr);
+    info!("Spawning server entity, binding to {:?} (fly.io: {})", 
+          server_addr, 
+          std::env::var("FLY_APP_NAME").is_ok());
     
     // Spawn server entity with UDP + Netcode
     commands.spawn((
@@ -137,7 +143,7 @@ fn main() {
     app.add_plugins(ProtocolPlugin);
 
     // Game systems
-    app.add_systems(Startup, (world::setup_world, spawn_server));
+    app.add_systems(Startup, (world::setup_world, colliders::load_baked_colliders, spawn_server));
     
     // Start server after spawning
     app.add_systems(Update, start_server);
@@ -156,6 +162,10 @@ fn main() {
         (
             // World time (day/night cycle)
             world::tick_world_time,
+            // Static collider streaming (keep colliders near active players)
+            colliders::stream_static_colliders,
+            // Structure collider streaming (desert settlements)
+            colliders::stream_structure_colliders,
             systems::handle_connections,
             systems::handle_disconnections,
             systems::receive_client_input,
@@ -164,6 +174,10 @@ fn main() {
             systems::simulate_players,
             // NPC AI
             npc::tick_npc_ai,
+            // World prop collisions (server-authoritative)
+            colliders::resolve_vehicle_static_collisions,
+            colliders::resolve_player_static_collisions,
+            colliders::resolve_npc_static_collisions,
             // Weapon systems
             weapons::handle_shoot_requests,
             weapons::handle_weapon_switch,

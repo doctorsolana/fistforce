@@ -9,3 +9,4 @@ lightyear = { workspace = true }
 serde = { workspace = true }
 noise = { workspace = true }
 rand = { workspace = true }
+bincode = "1.3"

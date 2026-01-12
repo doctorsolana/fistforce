@@ -4,12 +4,13 @@
 //! Updated for Lightyear 0.25 / Bevy 0.17
 
 use bevy::prelude::*;
+use bevy::audio::Volume;
 use bevy::diagnostic::{DiagnosticsStore, EntityCountDiagnosticsPlugin, FrameTimeDiagnosticsPlugin};
 use lightyear::prelude::*;
 use shared::{
-    weapons::{ballistics, WeaponDebugMode},
+    weapons::{ballistics, WeaponDebugMode, WeaponType},
     Bullet, BulletImpact, BulletImpactSurface, BulletVelocity, EquippedWeapon, HitConfirm, LocalTracer,
-    LocalPlayer, PlayerPosition, ShootRequest, ReloadRequest, ReliableChannel, WorldTerrain,
+    ChunkCoord, LocalPlayer, Player, PlayerPosition, ShootRequest, ReloadRequest, ReliableChannel, WorldTerrain,
 };
 
 /// Marker for the debug overlay UI
@@ -38,18 +39,80 @@ pub struct WeaponVisualAssets {
     pub blood_burst_material: Handle<StandardMaterial>,
 }
 
+/// Audio assets for weapon sound effects
+#[derive(Resource)]
+pub struct WeaponAudioAssets {
+    pub gun_shot: Handle<AudioSource>,
+    pub shotgun_shot: Handle<AudioSource>,
+    pub out_of_ammo: Handle<AudioSource>,
+    pub gun_reload: Handle<AudioSource>,
+}
+
+/// Load weapon audio assets at startup
+pub fn setup_weapon_audio_assets(
+    mut commands: Commands,
+    asset_server: Res<AssetServer>,
+) {
+    commands.insert_resource(WeaponAudioAssets {
+        gun_shot: asset_server.load("audio/sfx/gun_shot.ogg"),
+        shotgun_shot: asset_server.load("audio/sfx/shutgun_shot.ogg"),
+        out_of_ammo: asset_server.load("audio/sfx/out_of_ammo.ogg"),
+        gun_reload: asset_server.load("audio/sfx/gun_reload.ogg"),
+    });
+}
+
 use crate::crosshair;
 use crate::input::InputState;
 use crate::states::GameState;
 
 /// Resource to track shooting state
-#[derive(Resource, Default)]
+#[derive(Resource)]
 pub struct ShootingState {
     pub fire_held: bool,
     pub last_fire_time: f32,
     /// Set to true when a shot was fired this frame (for audio)
     pub shot_fired_this_frame: bool,
+    /// Set when player tries to shoot with no ammo
+    pub out_of_ammo_this_frame: bool,
+    /// Track weapon type that fired (for shotgun vs other sounds)
+    pub weapon_fired: Option<WeaponType>,
+    /// Accumulated vertical recoil (pitch) from rapid fire
+    pub accumulated_recoil_pitch: f32,
+    /// Accumulated horizontal recoil (yaw) from rapid fire
+    pub accumulated_recoil_yaw: f32,
+    /// Number of shots in current burst (resets after pause)
+    pub shots_in_burst: u32,
+    /// Last time out of ammo sound was played (to avoid spam)
+    pub last_out_of_ammo_time: f32,
 }
+
+impl Default for ShootingState {
+    fn default() -> Self {
+        Self {
+            fire_held: false,
+            last_fire_time: -10.0,
+            shot_fired_this_frame: false,
+            out_of_ammo_this_frame: false,
+            weapon_fired: None,
+            accumulated_recoil_pitch: 0.0,
+            accumulated_recoil_yaw: 0.0,
+            shots_in_burst: 0,
+            last_out_of_ammo_time: -10.0,
+        }
+    }
+}
+
+/// Resource to track reload state for audio
+#[derive(Resource, Default)]
+pub struct ReloadState {
+    pub reload_requested_this_frame: bool,
+}
+
+// Recoil settings
+const RECOIL_RECOVERY_SPEED: f32 = 4.0; // How fast recoil recovers (radians/sec)
+const RECOIL_BURST_RESET_TIME: f32 = 0.35; // Time without shooting to reset burst counter
+const RECOIL_ADS_MULTIPLIER: f32 = 0.5; // ADS reduces recoil by 50%
+const RECOIL_ACCUMULATION_MULT: f32 = 1.15; // Each shot in burst adds 15% more recoil
 
 /// Component for bullet impact markers
 #[derive(Component)]
@@ -111,15 +174,17 @@ pub fn handle_shoot_input(
     mut shooting_state: ResMut<ShootingState>,
     // In Lightyear 0.25, we send messages via MessageSender component - typed on message type
     mut client_query: Query<&mut MessageSender<ShootRequest>, (With<crate::GameClient>, With<Connected>)>,
-    input_state: Res<InputState>,
+    mut input_state: ResMut<InputState>,
     local_player: Query<&EquippedWeapon, With<LocalPlayer>>,
     camera: Query<&Transform, With<Camera3d>>,
     time: Res<Time>,
     game_state: Res<State<GameState>>,
     mut last_warn_time: Local<f32>,
 ) {
-    // Reset shot flag each frame
+    // Reset flags each frame
     shooting_state.shot_fired_this_frame = false;
+    shooting_state.out_of_ammo_this_frame = false;
+    shooting_state.weapon_fired = None;
     
     // Don't shoot if paused
     if game_state.get() != &GameState::Playing {
@@ -145,8 +210,18 @@ pub fn handle_shoot_input(
     
     // Check fire rate
     let cooldown = weapon.weapon_type.fire_cooldown();
-    let can_fire = weapon.ammo_in_mag > 0 
-        && (current_time - shooting_state.last_fire_time) >= cooldown;
+    let cooldown_passed = (current_time - shooting_state.last_fire_time) >= cooldown;
+    let has_ammo = weapon.ammo_in_mag > 0;
+    
+    // Out of ammo click (only on just pressed, not held, and with rate limiting)
+    if fire_pressed && !has_ammo && cooldown_passed {
+        if current_time - shooting_state.last_out_of_ammo_time > 0.3 {
+            shooting_state.out_of_ammo_this_frame = true;
+            shooting_state.last_out_of_ammo_time = current_time;
+        }
+    }
+    
+    let can_fire = has_ammo && cooldown_passed;
     
     if fire_pressed && can_fire {
         shooting_state.last_fire_time = current_time;
@@ -170,11 +245,99 @@ pub fn handle_shoot_input(
             *last_warn_time = current_time;
         }
 
+        // === APPLY RECOIL ===
+        let stats = weapon.weapon_type.stats();
+        
+        // Accumulation multiplier based on burst length (more shots = more recoil)
+        let burst_mult = RECOIL_ACCUMULATION_MULT.powi(shooting_state.shots_in_burst as i32);
+        
+        // ADS reduces recoil
+        let ads_mult = if aiming { RECOIL_ADS_MULTIPLIER } else { 1.0 };
+        
+        // Calculate recoil for this shot
+        let vertical_recoil = stats.recoil_vertical * burst_mult * ads_mult;
+        let horizontal_recoil = stats.recoil_horizontal * burst_mult * ads_mult;
+        
+        // Random horizontal direction (left or right)
+        let h_direction = if rand::random::<bool>() { 1.0 } else { -1.0 };
+        // Add some randomness to horizontal (not always max)
+        let h_random = 0.3 + rand::random::<f32>() * 0.7;
+        
+        // Apply recoil to camera pitch (kick up) and yaw (kick sideways)
+        input_state.pitch += vertical_recoil;
+        input_state.yaw += horizontal_recoil * h_direction * h_random;
+        
+        // Clamp pitch to valid range
+        input_state.pitch = input_state.pitch.clamp(
+            -std::f32::consts::FRAC_PI_2 + 0.01, 
+            std::f32::consts::FRAC_PI_2 - 0.01
+        );
+        
+        // Track accumulated recoil (for recovery system)
+        shooting_state.accumulated_recoil_pitch += vertical_recoil;
+        shooting_state.accumulated_recoil_yaw += horizontal_recoil * h_direction * h_random;
+        
+        // Increment burst counter
+        shooting_state.shots_in_burst += 1;
+
         // Mark that we fired for audio system
         shooting_state.shot_fired_this_frame = true;
+        shooting_state.weapon_fired = Some(weapon.weapon_type);
     }
     
     shooting_state.fire_held = fire_pressed;
+}
+
+/// Recover recoil over time when not shooting
+pub fn recover_recoil(
+    mut shooting_state: ResMut<ShootingState>,
+    mut input_state: ResMut<InputState>,
+    time: Res<Time>,
+) {
+    let dt = time.delta_secs();
+    let current_time = time.elapsed_secs();
+    
+    // Reset burst counter if haven't shot recently
+    if current_time - shooting_state.last_fire_time > RECOIL_BURST_RESET_TIME {
+        shooting_state.shots_in_burst = 0;
+    }
+    
+    // Recover recoil gradually (pull aim back down)
+    if shooting_state.accumulated_recoil_pitch.abs() > 0.001 {
+        let recovery = RECOIL_RECOVERY_SPEED * dt;
+        
+        // Recover pitch (vertical)
+        if shooting_state.accumulated_recoil_pitch > 0.0 {
+            let recover_amount = recovery.min(shooting_state.accumulated_recoil_pitch);
+            input_state.pitch -= recover_amount;
+            shooting_state.accumulated_recoil_pitch -= recover_amount;
+        } else {
+            let recover_amount = recovery.min(-shooting_state.accumulated_recoil_pitch);
+            input_state.pitch += recover_amount;
+            shooting_state.accumulated_recoil_pitch += recover_amount;
+        }
+        
+        // Clamp pitch
+        input_state.pitch = input_state.pitch.clamp(
+            -std::f32::consts::FRAC_PI_2 + 0.01, 
+            std::f32::consts::FRAC_PI_2 - 0.01
+        );
+    }
+    
+    // Recover yaw (horizontal) - faster recovery
+    if shooting_state.accumulated_recoil_yaw.abs() > 0.001 {
+        let recovery = RECOIL_RECOVERY_SPEED * 1.5 * dt;
+        
+        if shooting_state.accumulated_recoil_yaw > 0.0 {
+            let recover_amount = recovery.min(shooting_state.accumulated_recoil_yaw);
+            input_state.yaw -= recover_amount;
+            shooting_state.accumulated_recoil_yaw -= recover_amount;
+        } else {
+            let recover_amount = recovery.min(-shooting_state.accumulated_recoil_yaw);
+            input_state.yaw += recover_amount;
+            shooting_state.accumulated_recoil_yaw += recover_amount;
+        }
+    }
 }
 
 /// Handle reload input - sends request to server
@@ -183,7 +346,11 @@ pub fn handle_reload_input(
     mut client_query: Query<&mut MessageSender<ReloadRequest>, (With<crate::GameClient>, With<Connected>)>,
     local_player: Query<&EquippedWeapon, With<LocalPlayer>>,
     input_state: Res<InputState>,
+    mut reload_state: ResMut<ReloadState>,
 ) {
+    // Reset flag each frame
+    reload_state.reload_requested_this_frame = false;
+    
     // Don't reload in vehicle
     if input_state.in_vehicle {
         return;
@@ -197,9 +364,54 @@ pub fn handle_reload_input(
                 if let Ok(mut sender) = client_query.single_mut() {
                     let _ = sender.send::<ReliableChannel>(ReloadRequest);
                 }
+                reload_state.reload_requested_this_frame = true;
                 info!("Reload requested...");
             }
         }
+    }
+}
+
+/// Play weapon sound effects based on shooting/reload state
+pub fn play_weapon_sounds(
+    mut commands: Commands,
+    audio_assets: Option<Res<WeaponAudioAssets>>,
+    shooting_state: Res<ShootingState>,
+    reload_state: Res<ReloadState>,
+) {
+    let Some(audio) = audio_assets else { return };
+    
+    // Play shot sound
+    if shooting_state.shot_fired_this_frame {
+        let sound = if let Some(weapon_type) = shooting_state.weapon_fired {
+            if weapon_type == WeaponType::Shotgun {
+                audio.shotgun_shot.clone()
+            } else {
+                audio.gun_shot.clone()
+            }
+        } else {
+            audio.gun_shot.clone()
+        };
+        
+        commands.spawn((
+            AudioPlayer::new(sound),
+            PlaybackSettings::DESPAWN.with_volume(Volume::Linear(0.5)),
+        ));
+    }
+    
+    // Play out of ammo click
+    if shooting_state.out_of_ammo_this_frame {
+        commands.spawn((
+            AudioPlayer::new(audio.out_of_ammo.clone()),
+            PlaybackSettings::DESPAWN.with_volume(Volume::Linear(0.6)),
+        ));
+    }
+    
+    // Play reload sound
+    if reload_state.reload_requested_this_frame {
+        commands.spawn((
+            AudioPlayer::new(audio.gun_reload.clone()),
+            PlaybackSettings::DESPAWN.with_volume(Volume::Linear(0.5)),
+        ));
     }
 }
 
@@ -999,6 +1211,9 @@ pub fn update_debug_overlay(
     // Some useful counters (cheap to query)
     loaded_chunks: Res<crate::terrain::LoadedChunks>,
     props: Query<(), With<crate::props::EnvironmentProp>>,
+    prop_kinds: Query<&crate::props::PropKindTag, With<crate::props::EnvironmentProp>>,
+    collider_library: Option<Res<crate::props::ClientDerivedColliderLibrary>>,
+    players: Query<&PlayerPosition, With<Player>>,
     bullets: Query<(), With<Bullet>>,
     local_tracers: Query<(), With<LocalTracer>>,
 ) {
@@ -1054,11 +1269,33 @@ pub fn update_debug_overlay(
         render_cpu.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
 
         let mut lines = String::new();
+        let collidable_props = collider_library
+            .as_ref()
+            .map(|lib| {
+                prop_kinds
+                    .iter()
+                    .filter(|k| lib.by_kind.contains_key(&k.0))
+                    .count()
+            })
+            .unwrap_or(0);
+        let baked_kinds = collider_library.as_ref().map(|lib| lib.by_kind.len()).unwrap_or(0);
+
+        // Approximate the server-side collider chunk set (radius=3 chunks) by unioning all players.
+        // This matches the server's current streaming radius in `server/src/colliders.rs`.
+        let collider_chunk_radius = 3;
+        let mut collider_chunks = std::collections::HashSet::new();
+        for p in players.iter() {
+            let center = ChunkCoord::from_world_pos(p.0);
+            collider_chunks.extend(center.chunks_in_radius(collider_chunk_radius));
+        }
         lines.push_str(&format!(
-            "Entities: {:.0}\nChunks: {}\nProps: {}\nBullets: {} (local tracers: {})\n",
+            "Entities: {:.0}\nChunks: {}\nProps: {}\nCollider chunks: {}\nCollidable props: {} (baked kinds: {})\nBullets: {} (local tracers: {})\n",
             entity_count,
             loaded_chunks.chunks.len(),
             props.iter().count(),
+            collider_chunks.len(),
+            collidable_props,
+            baked_kinds,
             bullets.iter().count(),
             local_tracers.iter().count()
         ));

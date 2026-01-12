@@ -5,12 +5,14 @@
 use bevy::prelude::*;
 use bevy::camera::visibility::VisibilityRange;
 use bevy::light::NotShadowCaster;
-use noise::{NoiseFn, Perlin};
-use shared::{terrain::{Biome, ChunkCoord, CHUNK_SIZE}, WorldTerrain};
+use shared::{ChunkCoord, WorldTerrain};
+use shared::PropRenderTuning;
+use std::collections::HashMap;
 
 use crate::terrain::LoadedChunks;
 use crate::systems::ClientWorldRoot;
 use crate::states::GameState;
+use shared::weapons::WeaponDebugMode;
 
 /// Marker for environment prop entities
 #[derive(Component)]
@@ -18,17 +20,9 @@ pub struct EnvironmentProp {
     pub chunk: ChunkCoord,
 }
 
-/// Per-prop render tuning applied to the spawned mesh entities under the prop.
-///
-/// This is a cheap way to keep shadows enabled globally while avoiding rendering
-/// thousands of tiny clutter meshes into every directional shadow cascade.
+/// Stores which prop kind was spawned (used for collider debug / future collision).
 #[derive(Component, Clone, Copy, Debug)]
-pub struct PropRenderTuning {
-    /// If false, meshes under this prop will get `NotShadowCaster`.
-    pub casts_shadows: bool,
-    /// If set, meshes under this prop will get `VisibilityRange::abrupt(0.0, end)`.
-    pub visible_end_distance: Option<f32>,
-}
+pub struct PropKindTag(pub shared::PropKind);
 
 /// Tracks which chunks have had props spawned
 #[derive(Resource, Default)]
@@ -39,22 +33,26 @@ pub struct LoadedPropChunks {
 /// Handles to loaded prop assets
 #[derive(Resource)]
 pub struct PropAssets {
-    // Desert props
-    pub rocks: Vec<Handle<Scene>>,
-    pub dead_trees: Vec<Handle<Scene>>,
-    // Grassland props  
-    pub trees: Vec<Handle<Scene>>,
-    pub bushes: Vec<Handle<Scene>>,
-    pub grass: Vec<Handle<Scene>>,
-    // Natureland props (Stylized Nature pack)
-    pub nature_pines: Vec<Handle<Scene>>,
-    pub nature_twisted_trees: Vec<Handle<Scene>>,
-    pub nature_bushes: Vec<Handle<Scene>>,
-    pub nature_mushrooms: Vec<Handle<Scene>>,
-    pub nature_ferns: Vec<Handle<Scene>>,
-    pub nature_flowers: Vec<Handle<Scene>>,
-    pub nature_rocks: Vec<Handle<Scene>>,
-    pub nature_grass: Vec<Handle<Scene>>,
+    pub scenes: HashMap<shared::PropKind, Handle<Scene>>,
+}
+
+/// Client-side derived collider info (for debug gizmos).
+#[derive(Resource)]
+pub struct ClientDerivedColliderLibrary {
+    pub by_kind: HashMap<shared::PropKind, DerivedCollider>,
+}
+
+/// A face of the convex hull (triangle).
+#[derive(Clone, Debug)]
+pub struct HullFace {
+    pub vertices: [Vec3; 3],
+}
+
+#[derive(Clone, Debug)]
+pub struct DerivedCollider {
+    pub bounding_radius: f32,
+    /// Triangulated faces of the 3D convex hull
+    pub hull_faces: Vec<HullFace>,
 }
 
 /// Plugin for environmental props
@@ -63,10 +61,15 @@ pub struct PropsPlugin;
 impl Plugin for PropsPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<LoadedPropChunks>();
-        app.add_systems(Startup, load_prop_assets);
+        app.add_systems(Startup, (load_prop_assets, load_baked_prop_colliders));
         app.add_systems(
             Update,
-            (spawn_chunk_props, apply_prop_render_tuning, cleanup_chunk_props)
+            (
+                spawn_chunk_props,
+                apply_prop_render_tuning,
+                cleanup_chunk_props,
+                debug_draw_prop_colliders,
+            )
                 .run_if(in_state(GameState::Playing)),
         );
     }
@@ -74,127 +77,37 @@ impl Plugin for PropsPlugin {
 
 /// Load all prop GLTF assets at startup
 fn load_prop_assets(mut commands: Commands, asset_server: Res<AssetServer>) {
-    // Desert props (KayKit pack)
-    let rocks = vec![
-        asset_server.load("Assetsfromassetpack/gltf/Rock_1_A_Color1.gltf#Scene0"),
-        asset_server.load("Assetsfromassetpack/gltf/Rock_1_B_Color1.gltf#Scene0"),
-        asset_server.load("Assetsfromassetpack/gltf/Rock_1_C_Color1.gltf#Scene0"),
-        asset_server.load("Assetsfromassetpack/gltf/Rock_2_A_Color1.gltf#Scene0"),
-        asset_server.load("Assetsfromassetpack/gltf/Rock_2_B_Color1.gltf#Scene0"),
-        asset_server.load("Assetsfromassetpack/gltf/Rock_3_A_Color1.gltf#Scene0"),
-        asset_server.load("Assetsfromassetpack/gltf/Rock_3_B_Color1.gltf#Scene0"),
-        asset_server.load("Assetsfromassetpack/gltf/Rock_3_C_Color1.gltf#Scene0"),
-    ];
+    let mut scenes = HashMap::new();
+    for kind in shared::ALL_PROP_KINDS.iter().copied() {
+        scenes.insert(kind, asset_server.load(kind.scene_path()));
+    }
 
-    let dead_trees = vec![
-        asset_server.load("Assetsfromassetpack/gltf/Tree_Bare_1_A_Color1.gltf#Scene0"),
-        asset_server.load("Assetsfromassetpack/gltf/Tree_Bare_1_B_Color1.gltf#Scene0"),
-        asset_server.load("Assetsfromassetpack/gltf/Tree_Bare_2_A_Color1.gltf#Scene0"),
-        asset_server.load("Assetsfromassetpack/gltf/Tree_Bare_2_B_Color1.gltf#Scene0"),
-    ];
-
-    // Grassland props (KayKit pack)
-    let trees = vec![
-        asset_server.load("Assetsfromassetpack/gltf/Tree_1_A_Color1.gltf#Scene0"),
-        asset_server.load("Assetsfromassetpack/gltf/Tree_1_B_Color1.gltf#Scene0"),
-        asset_server.load("Assetsfromassetpack/gltf/Tree_2_A_Color1.gltf#Scene0"),
-        asset_server.load("Assetsfromassetpack/gltf/Tree_2_B_Color1.gltf#Scene0"),
-        asset_server.load("Assetsfromassetpack/gltf/Tree_3_A_Color1.gltf#Scene0"),
-        asset_server.load("Assetsfromassetpack/gltf/Tree_4_A_Color1.gltf#Scene0"),
-    ];
-
-    let bushes = vec![
-        asset_server.load("Assetsfromassetpack/gltf/Bush_1_A_Color1.gltf#Scene0"),
-        asset_server.load("Assetsfromassetpack/gltf/Bush_1_B_Color1.gltf#Scene0"),
-        asset_server.load("Assetsfromassetpack/gltf/Bush_2_A_Color1.gltf#Scene0"),
-        asset_server.load("Assetsfromassetpack/gltf/Bush_2_B_Color1.gltf#Scene0"),
-        asset_server.load("Assetsfromassetpack/gltf/Bush_3_A_Color1.gltf#Scene0"),
-        asset_server.load("Assetsfromassetpack/gltf/Bush_4_A_Color1.gltf#Scene0"),
-    ];
-
-    let grass = vec![
-        asset_server.load("Assetsfromassetpack/gltf/Grass_1_A_Color1.gltf#Scene0"),
-        asset_server.load("Assetsfromassetpack/gltf/Grass_1_B_Color1.gltf#Scene0"),
-        asset_server.load("Assetsfromassetpack/gltf/Grass_2_A_Color1.gltf#Scene0"),
-        asset_server.load("Assetsfromassetpack/gltf/Grass_2_B_Color1.gltf#Scene0"),
-    ];
-
-    // Natureland props (Stylized Nature MegaKit)
-    let nature_pines = vec![
-        asset_server.load("StylizedNature/glTF/Pine_1.gltf#Scene0"),
-        asset_server.load("StylizedNature/glTF/Pine_2.gltf#Scene0"),
-        asset_server.load("StylizedNature/glTF/Pine_3.gltf#Scene0"),
-        asset_server.load("StylizedNature/glTF/Pine_4.gltf#Scene0"),
-        asset_server.load("StylizedNature/glTF/Pine_5.gltf#Scene0"),
-    ];
-
-    let nature_twisted_trees = vec![
-        asset_server.load("StylizedNature/glTF/TwistedTree_1.gltf#Scene0"),
-        asset_server.load("StylizedNature/glTF/TwistedTree_2.gltf#Scene0"),
-        asset_server.load("StylizedNature/glTF/TwistedTree_3.gltf#Scene0"),
-        asset_server.load("StylizedNature/glTF/TwistedTree_4.gltf#Scene0"),
-        asset_server.load("StylizedNature/glTF/TwistedTree_5.gltf#Scene0"),
-        asset_server.load("StylizedNature/glTF/CommonTree_1.gltf#Scene0"),
-        asset_server.load("StylizedNature/glTF/CommonTree_2.gltf#Scene0"),
-        asset_server.load("StylizedNature/glTF/CommonTree_3.gltf#Scene0"),
-    ];
-
-    let nature_bushes = vec![
-        asset_server.load("StylizedNature/glTF/Bush_Common.gltf#Scene0"),
-        asset_server.load("StylizedNature/glTF/Bush_Common_Flowers.gltf#Scene0"),
-    ];
-
-    let nature_mushrooms = vec![
-        asset_server.load("StylizedNature/glTF/Mushroom_Common.gltf#Scene0"),
-        asset_server.load("StylizedNature/glTF/Mushroom_Laetiporus.gltf#Scene0"),
-    ];
-
-    let nature_ferns = vec![
-        asset_server.load("StylizedNature/glTF/Fern_1.gltf#Scene0"),
-        asset_server.load("StylizedNature/glTF/Plant_1.gltf#Scene0"),
-        asset_server.load("StylizedNature/glTF/Plant_1_Big.gltf#Scene0"),
-        asset_server.load("StylizedNature/glTF/Plant_7.gltf#Scene0"),
-    ];
-
-    let nature_flowers = vec![
-        asset_server.load("StylizedNature/glTF/Flower_3_Group.gltf#Scene0"),
-        asset_server.load("StylizedNature/glTF/Flower_4_Group.gltf#Scene0"),
-        asset_server.load("StylizedNature/glTF/Clover_1.gltf#Scene0"),
-        asset_server.load("StylizedNature/glTF/Clover_2.gltf#Scene0"),
-    ];
-
-    let nature_rocks = vec![
-        asset_server.load("StylizedNature/glTF/Rock_Medium_1.gltf#Scene0"),
-        asset_server.load("StylizedNature/glTF/Rock_Medium_2.gltf#Scene0"),
-        asset_server.load("StylizedNature/glTF/Rock_Medium_3.gltf#Scene0"),
-        asset_server.load("StylizedNature/glTF/Pebble_Round_1.gltf#Scene0"),
-        asset_server.load("StylizedNature/glTF/Pebble_Round_2.gltf#Scene0"),
-    ];
-
-    let nature_grass = vec![
-        asset_server.load("StylizedNature/glTF/Grass_Common_Short.gltf#Scene0"),
-        asset_server.load("StylizedNature/glTF/Grass_Common_Tall.gltf#Scene0"),
-        asset_server.load("StylizedNature/glTF/Grass_Wispy_Short.gltf#Scene0"),
-        asset_server.load("StylizedNature/glTF/Grass_Wispy_Tall.gltf#Scene0"),
-    ];
-
-    commands.insert_resource(PropAssets {
-        rocks,
-        dead_trees,
-        trees,
-        bushes,
-        grass,
-        nature_pines,
-        nature_twisted_trees,
-        nature_bushes,
-        nature_mushrooms,
-        nature_ferns,
-        nature_flowers,
-        nature_rocks,
-        nature_grass,
-    });
+    commands.insert_resource(PropAssets { scenes });
 
     info!("Loaded environmental prop assets");
+}
+
+/// Load baked colliders (for debug visualization).
+fn load_baked_prop_colliders(mut commands: Commands) {
+    let path = "client/assets/colliders.bin";
+    let db = match shared::load_baked_collider_db_from_file(path) {
+        Ok(db) => db,
+        Err(e) => {
+            warn!("Could not load baked colliders at {path}: {e} (debug gizmos disabled)");
+            return;
+        }
+    };
+
+    let mut by_kind = HashMap::new();
+    for kind in shared::ALL_PROP_KINDS.iter().copied() {
+        let Some(baked) = db.entries.get(kind.id()) else { continue };
+        if let Some(d) = derive_collider(baked) {
+            by_kind.insert(kind, d);
+        }
+    }
+
+    info!("Loaded baked colliders for debug: {} kinds", by_kind.len());
+    commands.insert_resource(ClientDerivedColliderLibrary { by_kind });
 }
 
 /// Spawn props for newly loaded terrain chunks
@@ -209,375 +122,208 @@ fn spawn_chunk_props(
     let Some(assets) = prop_assets else { return };
     let Ok(world_root) = world_root_query.single() else { return };
 
-    // Use deterministic noise for prop placement
-    let placement_noise = Perlin::new(shared::terrain::WORLD_SEED.wrapping_add(5000));
-    let density_noise = Perlin::new(shared::terrain::WORLD_SEED.wrapping_add(6000));
-    let variety_noise = Perlin::new(shared::terrain::WORLD_SEED.wrapping_add(7000));
-
     // Find chunks that need props
     for coord in loaded_chunks.chunks.iter() {
         if loaded_prop_chunks.chunks.contains(coord) {
             continue;
         }
 
-        let chunk_origin = coord.world_pos();
-        
-        // Sample center to determine biome for grid spacing
-        let center_x = chunk_origin.x + CHUNK_SIZE / 2.0;
-        let center_z = chunk_origin.z + CHUNK_SIZE / 2.0;
-        let chunk_biome = terrain.generator.get_biome(center_x, center_z);
-        
-        // Sample points within the chunk for prop placement
-        // Use a grid with noise-based jitter for natural distribution
-        // Natureland uses wider spacing due to more detailed models
-        let grid_spacing = match chunk_biome {
-            Biome::Natureland => 12.0, // Sparser for detailed models
-            _ => 8.0,                  // Normal density for other biomes
-        };
-        let steps = (CHUNK_SIZE / grid_spacing) as i32;
+        let spawns = shared::generate_chunk_prop_spawns(&terrain.generator, *coord);
+        for spawn in spawns {
+            let Some(scene) = assets.scenes.get(&spawn.kind).cloned() else {
+                continue;
+            };
 
-        for gz in 0..steps {
-            for gx in 0..steps {
-                let base_x = chunk_origin.x + gx as f32 * grid_spacing + grid_spacing * 0.5;
-                let base_z = chunk_origin.z + gz as f32 * grid_spacing + grid_spacing * 0.5;
-
-                // Add deterministic jitter
-                let jitter_x = placement_noise.get([base_x as f64 * 0.1, base_z as f64 * 0.1]) as f32 * grid_spacing * 0.4;
-                let jitter_z = placement_noise.get([base_z as f64 * 0.1, base_x as f64 * 0.1]) as f32 * grid_spacing * 0.4;
-                
-                let world_x = base_x + jitter_x;
-                let world_z = base_z + jitter_z;
-                let world_y = terrain.generator.get_height(world_x, world_z);
-                
-                // Get biome and density at this position
-                let biome = terrain.generator.get_biome(world_x, world_z);
-                let density = density_noise.get([world_x as f64 * 0.05, world_z as f64 * 0.05]) as f32;
-                let variety = variety_noise.get([world_x as f64 * 0.3, world_z as f64 * 0.3]) as f32;
-
-                // Spawn props based on biome
-                match biome {
-                    Biome::Desert => {
-                        spawn_desert_prop(
-                            &mut commands,
-                            &assets,
-                            world_root,
-                            *coord,
-                            Vec3::new(world_x, world_y, world_z),
-                            density,
-                            variety,
-                        );
-                    }
-                    Biome::Grasslands => {
-                        spawn_grassland_prop(
-                            &mut commands,
-                            &assets,
-                            world_root,
-                            *coord,
-                            Vec3::new(world_x, world_y, world_z),
-                            density,
-                            variety,
-                        );
-                    }
-                    Biome::Natureland => {
-                        spawn_natureland_prop(
-                            &mut commands,
-                            &assets,
-                            world_root,
-                            *coord,
-                            Vec3::new(world_x, world_y, world_z),
-                            density,
-                            variety,
-                        );
-                    }
-                }
-            }
+            let prop = commands
+                .spawn((
+                    EnvironmentProp { chunk: spawn.chunk },
+                    PropKindTag(spawn.kind),
+                    spawn.render_tuning,
+                    SceneRoot(scene),
+                    Transform::from_translation(spawn.position)
+                        .with_rotation(spawn.rotation)
+                        .with_scale(Vec3::splat(spawn.scale)),
+                ))
+                .id();
+            commands.entity(world_root).add_child(prop);
         }
 
         loaded_prop_chunks.chunks.insert(*coord);
     }
 }
 
-/// Spawn desert props (rocks + rare dead trees)
-fn spawn_desert_prop(
-    commands: &mut Commands,
-    assets: &PropAssets,
-    world_root: Entity,
-    chunk: ChunkCoord,
-    position: Vec3,
-    density: f32,
-    variety: f32,
-) {
-    // Rocks: ~30% chance at each grid point
-    if density > 0.2 {
-        let rock_idx = ((variety.abs() * 100.0) as usize) % assets.rocks.len();
-        let rotation = Quat::from_rotation_y(variety * std::f32::consts::TAU);
-        let scale = 0.8 + variety.abs() * 0.6; // Random scale 0.8-1.4
-        
-        let prop = commands.spawn((
-            EnvironmentProp { chunk },
-            PropRenderTuning {
-                casts_shadows: true,
-                visible_end_distance: None,
-            },
-            SceneRoot(assets.rocks[rock_idx].clone()),
-            Transform::from_translation(position)
-                .with_rotation(rotation)
-                .with_scale(Vec3::splat(scale)),
-        )).id();
-        commands.entity(world_root).add_child(prop);
-    }
-    // Dead trees: ~5% chance (very rare)
-    else if density > 0.1 && density < 0.15 {
-        let tree_idx = ((variety.abs() * 100.0) as usize) % assets.dead_trees.len();
-        let rotation = Quat::from_rotation_y(variety * std::f32::consts::TAU);
-        let scale = 1.5 + variety.abs() * 0.5; // Larger scale for trees
-        
-        let prop = commands.spawn((
-            EnvironmentProp { chunk },
-            PropRenderTuning {
-                casts_shadows: true,
-                visible_end_distance: None,
-            },
-            SceneRoot(assets.dead_trees[tree_idx].clone()),
-            Transform::from_translation(position)
-                .with_rotation(rotation)
-                .with_scale(Vec3::splat(scale)),
-        )).id();
-        commands.entity(world_root).add_child(prop);
+fn derive_collider(baked: &shared::BakedCollider) -> Option<DerivedCollider> {
+    match baked {
+        shared::BakedCollider::ConvexHull { points } => {
+            if points.len() < 4 {
+                return None;
+            }
+            
+            let mut r2 = 0.0f32;
+            let vertices: Vec<Vec3> = points.iter()
+                .map(|p| {
+                    r2 = r2.max(p[0] * p[0] + p[2] * p[2]);
+                    Vec3::new(p[0], p[1], p[2])
+                })
+                .collect();
+            
+            // Triangulate the convex hull
+            let hull_faces = triangulate_convex_hull(&vertices);
+            
+            Some(DerivedCollider {
+                bounding_radius: r2.sqrt(),
+                hull_faces,
+            })
+        }
     }
 }
 
-/// Spawn grassland props (trees, bushes, grass)
-fn spawn_grassland_prop(
-    commands: &mut Commands,
-    assets: &PropAssets,
-    world_root: Entity,
-    chunk: ChunkCoord,
-    position: Vec3,
-    density: f32,
-    variety: f32,
-) {
-    // Trees: ~15% chance
-    if density > 0.35 {
-        let tree_idx = ((variety.abs() * 100.0) as usize) % assets.trees.len();
-        let rotation = Quat::from_rotation_y(variety * std::f32::consts::TAU);
-        let scale = 1.2 + variety.abs() * 0.8; // Scale 1.2-2.0
-        
-        let prop = commands.spawn((
-            EnvironmentProp { chunk },
-            PropRenderTuning {
-                casts_shadows: true,
-                visible_end_distance: None,
-            },
-            SceneRoot(assets.trees[tree_idx].clone()),
-            Transform::from_translation(position)
-                .with_rotation(rotation)
-                .with_scale(Vec3::splat(scale)),
-        )).id();
-        commands.entity(world_root).add_child(prop);
+/// Triangulate a convex hull from its vertices for visualization.
+fn triangulate_convex_hull(vertices: &[Vec3]) -> Vec<HullFace> {
+    if vertices.len() < 4 {
+        return vec![];
     }
-    // Bushes: ~20% chance
-    else if density > 0.15 && density < 0.35 {
-        let bush_idx = ((variety.abs() * 100.0) as usize) % assets.bushes.len();
-        let rotation = Quat::from_rotation_y(variety * std::f32::consts::TAU);
-        let scale = 0.8 + variety.abs() * 0.4;
-        
-        let prop = commands.spawn((
-            EnvironmentProp { chunk },
-            // Bushes tend to be lots of little leaves; they don't need to cast shadows.
-            PropRenderTuning {
-                casts_shadows: false,
-                visible_end_distance: Some(90.0),
-            },
-            SceneRoot(assets.bushes[bush_idx].clone()),
-            Transform::from_translation(position)
-                .with_rotation(rotation)
-                .with_scale(Vec3::splat(scale)),
-        )).id();
-        commands.entity(world_root).add_child(prop);
+
+    let centroid = vertices.iter().fold(Vec3::ZERO, |a, &b| a + b) / vertices.len() as f32;
+    let mut faces = Vec::new();
+    let n = vertices.len();
+    
+    for i in 0..n {
+        for j in (i + 1)..n {
+            for k in (j + 1)..n {
+                let v0 = vertices[i];
+                let v1 = vertices[j];
+                let v2 = vertices[k];
+                
+                let e1 = v1 - v0;
+                let e2 = v2 - v0;
+                let mut normal = e1.cross(e2);
+                let len = normal.length();
+                if len < 1e-6 {
+                    continue;
+                }
+                normal /= len;
+                
+                let d = normal.dot(v0);
+                
+                // Check if all other vertices are behind this plane
+                let mut valid = true;
+                for m in 0..n {
+                    if m == i || m == j || m == k {
+                        continue;
+                    }
+                    let dist = normal.dot(vertices[m]) - d;
+                    if dist > 1e-4 {
+                        valid = false;
+                        break;
+                    }
+                }
+                
+                if !valid {
+                    // Try flipped normal
+                    let flipped_normal = -normal;
+                    let flipped_d = -d;
+                    
+                    let mut valid_flipped = true;
+                    for m in 0..n {
+                        if m == i || m == j || m == k {
+                            continue;
+                        }
+                        let dist = flipped_normal.dot(vertices[m]) - flipped_d;
+                        if dist > 1e-4 {
+                            valid_flipped = false;
+                            break;
+                        }
+                    }
+                    
+                    if valid_flipped {
+                        faces.push(HullFace {
+                            vertices: [v0, v2, v1],
+                        });
+                    }
+                } else {
+                    // Ensure outward-facing
+                    let to_centroid = centroid - v0;
+                    if normal.dot(to_centroid) > 0.0 {
+                        faces.push(HullFace {
+                            vertices: [v0, v2, v1],
+                        });
+                    } else {
+                        faces.push(HullFace {
+                            vertices: [v0, v1, v2],
+                        });
+                    }
+                }
+            }
+        }
     }
-    // Grass: ~25% chance  
-    else if density > -0.1 && density < 0.15 {
-        let grass_idx = ((variety.abs() * 100.0) as usize) % assets.grass.len();
-        let rotation = Quat::from_rotation_y(variety * std::f32::consts::TAU);
-        let scale = 0.6 + variety.abs() * 0.3;
-        
-        let prop = commands.spawn((
-            EnvironmentProp { chunk },
-            PropRenderTuning {
-                casts_shadows: false,
-                visible_end_distance: Some(80.0), // Increased from 45 for better visibility
-            },
-            SceneRoot(assets.grass[grass_idx].clone()),
-            Transform::from_translation(position)
-                .with_rotation(rotation)
-                .with_scale(Vec3::splat(scale)),
-        )).id();
-        commands.entity(world_root).add_child(prop);
-    }
+    
+    // Remove duplicates
+    faces.dedup_by(|a, b| {
+        let mut a_verts: Vec<_> = a.vertices.iter().map(|v| 
+            ((v.x * 1000.0) as i32, (v.y * 1000.0) as i32, (v.z * 1000.0) as i32)
+        ).collect();
+        let mut b_verts: Vec<_> = b.vertices.iter().map(|v| 
+            ((v.x * 1000.0) as i32, (v.y * 1000.0) as i32, (v.z * 1000.0) as i32)
+        ).collect();
+        a_verts.sort();
+        b_verts.sort();
+        a_verts == b_verts
+    });
+    
+    faces
 }
 
-/// Spawn natureland props (stylized forest with pines, twisted trees, mushrooms, etc.)
-fn spawn_natureland_prop(
-    commands: &mut Commands,
-    assets: &PropAssets,
-    world_root: Entity,
-    chunk: ChunkCoord,
-    position: Vec3,
-    density: f32,
-    variety: f32,
+/// Draw client-side prop collider gizmos (debug-only).
+fn debug_draw_prop_colliders(
+    mut gizmos: Gizmos,
+    debug_mode: Res<WeaponDebugMode>,
+    library: Option<Res<ClientDerivedColliderLibrary>>,
+    camera: Query<&Transform, With<Camera3d>>,
+    props: Query<(&PropKindTag, &Transform), With<EnvironmentProp>>,
 ) {
-    // Pine trees: ~12% chance (tall conifers)
-    if density > 0.4 {
-        let tree_idx = ((variety.abs() * 100.0) as usize) % assets.nature_pines.len();
-        let rotation = Quat::from_rotation_y(variety * std::f32::consts::TAU);
-        let scale = 1.0 + variety.abs() * 0.5; // Scale 1.0-1.5
-        
-        let prop = commands.spawn((
-            EnvironmentProp { chunk },
-            PropRenderTuning {
-                casts_shadows: true,
-                visible_end_distance: None,
-            },
-            SceneRoot(assets.nature_pines[tree_idx].clone()),
-            Transform::from_translation(position)
-                .with_rotation(rotation)
-                .with_scale(Vec3::splat(scale)),
-        )).id();
-        commands.entity(world_root).add_child(prop);
+    if !debug_mode.0 {
+        return;
     }
-    // Twisted/common trees: ~10% chance
-    else if density > 0.3 && density < 0.4 {
-        let tree_idx = ((variety.abs() * 100.0) as usize) % assets.nature_twisted_trees.len();
-        let rotation = Quat::from_rotation_y(variety * std::f32::consts::TAU);
-        let scale = 0.9 + variety.abs() * 0.4;
-        
-        let prop = commands.spawn((
-            EnvironmentProp { chunk },
-            PropRenderTuning {
-                casts_shadows: true,
-                visible_end_distance: None,
-            },
-            SceneRoot(assets.nature_twisted_trees[tree_idx].clone()),
-            Transform::from_translation(position)
-                .with_rotation(rotation)
-                .with_scale(Vec3::splat(scale)),
-        )).id();
-        commands.entity(world_root).add_child(prop);
-    }
-    // Bushes: ~12% chance
-    else if density > 0.18 && density < 0.3 {
-        let bush_idx = ((variety.abs() * 100.0) as usize) % assets.nature_bushes.len();
-        let rotation = Quat::from_rotation_y(variety * std::f32::consts::TAU);
-        let scale = 0.7 + variety.abs() * 0.4;
-        
-        let prop = commands.spawn((
-            EnvironmentProp { chunk },
-            PropRenderTuning {
-                casts_shadows: false,
-                visible_end_distance: Some(90.0),
-            },
-            SceneRoot(assets.nature_bushes[bush_idx].clone()),
-            Transform::from_translation(position)
-                .with_rotation(rotation)
-                .with_scale(Vec3::splat(scale)),
-        )).id();
-        commands.entity(world_root).add_child(prop);
-    }
-    // Ferns and plants: ~15% chance
-    else if density > 0.03 && density < 0.18 {
-        let fern_idx = ((variety.abs() * 100.0) as usize) % assets.nature_ferns.len();
-        let rotation = Quat::from_rotation_y(variety * std::f32::consts::TAU);
-        let scale = 0.6 + variety.abs() * 0.3;
-        
-        let prop = commands.spawn((
-            EnvironmentProp { chunk },
-            PropRenderTuning {
-                casts_shadows: false,
-                visible_end_distance: Some(70.0), // Increased from 55 for better visibility
-            },
-            SceneRoot(assets.nature_ferns[fern_idx].clone()),
-            Transform::from_translation(position)
-                .with_rotation(rotation)
-                .with_scale(Vec3::splat(scale)),
-        )).id();
-        commands.entity(world_root).add_child(prop);
-    }
-    // Grass: ~15% chance
-    else if density > -0.12 && density < 0.03 {
-        let grass_idx = ((variety.abs() * 100.0) as usize) % assets.nature_grass.len();
-        let rotation = Quat::from_rotation_y(variety * std::f32::consts::TAU);
-        let scale = 0.5 + variety.abs() * 0.3;
-        
-        let prop = commands.spawn((
-            EnvironmentProp { chunk },
-            PropRenderTuning {
-                casts_shadows: false,
-                visible_end_distance: Some(75.0), // Increased from 45 for better visibility
-            },
-            SceneRoot(assets.nature_grass[grass_idx].clone()),
-            Transform::from_translation(position)
-                .with_rotation(rotation)
-                .with_scale(Vec3::splat(scale)),
-        )).id();
-        commands.entity(world_root).add_child(prop);
-    }
-    // Flowers: ~8% chance
-    else if density > -0.2 && density < -0.12 {
-        let flower_idx = ((variety.abs() * 100.0) as usize) % assets.nature_flowers.len();
-        let rotation = Quat::from_rotation_y(variety * std::f32::consts::TAU);
-        let scale = 0.5 + variety.abs() * 0.25;
-        
-        let prop = commands.spawn((
-            EnvironmentProp { chunk },
-            PropRenderTuning {
-                casts_shadows: false,
-                visible_end_distance: Some(55.0), // Increased from 35 for better visibility
-            },
-            SceneRoot(assets.nature_flowers[flower_idx].clone()),
-            Transform::from_translation(position)
-                .with_rotation(rotation)
-                .with_scale(Vec3::splat(scale)),
-        )).id();
-        commands.entity(world_root).add_child(prop);
-    }
-    // Mushrooms: ~5% chance (rare)
-    else if density > -0.25 && density < -0.2 {
-        let mush_idx = ((variety.abs() * 100.0) as usize) % assets.nature_mushrooms.len();
-        let rotation = Quat::from_rotation_y(variety * std::f32::consts::TAU);
-        let scale = 0.4 + variety.abs() * 0.3;
-        
-        let prop = commands.spawn((
-            EnvironmentProp { chunk },
-            PropRenderTuning {
-                casts_shadows: false,
-                visible_end_distance: Some(30.0),
-            },
-            SceneRoot(assets.nature_mushrooms[mush_idx].clone()),
-            Transform::from_translation(position)
-                .with_rotation(rotation)
-                .with_scale(Vec3::splat(scale)),
-        )).id();
-        commands.entity(world_root).add_child(prop);
-    }
-    // Rocks: ~5% chance
-    else if density > -0.3 && density < -0.25 {
-        let rock_idx = ((variety.abs() * 100.0) as usize) % assets.nature_rocks.len();
-        let rotation = Quat::from_rotation_y(variety * std::f32::consts::TAU);
-        let scale = 0.6 + variety.abs() * 0.4;
-        
-        let prop = commands.spawn((
-            EnvironmentProp { chunk },
-            PropRenderTuning {
-                casts_shadows: true,
-                visible_end_distance: Some(180.0),
-            },
-            SceneRoot(assets.nature_rocks[rock_idx].clone()),
-            Transform::from_translation(position)
-                .with_rotation(rotation)
-                .with_scale(Vec3::splat(scale)),
-        )).id();
-        commands.entity(world_root).add_child(prop);
+    let Some(library) = library else { return };
+
+    let Ok(camera) = camera.single() else { return };
+    let cam_pos = camera.translation;
+    let max_dist = 120.0;
+    let max_dist2 = max_dist * max_dist;
+
+    let color = Color::srgba(0.0, 1.0, 1.0, 0.5);
+
+    for (kind, transform) in props.iter() {
+        let Some(shape) = library.by_kind.get(&kind.0) else { continue };
+
+        let pos = transform.translation;
+        if (pos - cam_pos).length_squared() > max_dist2 {
+            continue;
+        }
+
+        let s = transform.scale.x;
+
+        if !shape.hull_faces.is_empty() {
+            // Draw actual 3D convex hull wireframe with rotation applied
+            let rot = transform.rotation;
+            for face in &shape.hull_faces {
+                // Apply rotation then scale, then translate
+                let v0 = pos + rot * (face.vertices[0] * s);
+                let v1 = pos + rot * (face.vertices[1] * s);
+                let v2 = pos + rot * (face.vertices[2] * s);
+                
+                gizmos.line(v0, v1, color);
+                gizmos.line(v1, v2, color);
+                gizmos.line(v2, v0, color);
+            }
+        } else {
+            // Fallback: draw bounding sphere
+            let circle_rot = Quat::from_rotation_x(std::f32::consts::FRAC_PI_2);
+            let r = (shape.bounding_radius * s).max(0.05);
+            let iso = Isometry3d::new(pos, circle_rot);
+            gizmos.circle(iso, r, color).resolution(24);
+        }
     }
 }
 

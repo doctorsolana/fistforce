@@ -9,6 +9,9 @@ pub const PLAYER_HEIGHT: f32 = 1.8;
 /// Player radius (for capsule)
 pub const PLAYER_RADIUS: f32 = 0.3;
 
+/// Maximum height a player can step up onto (small rocks, curbs, etc.)
+pub const STEP_UP_HEIGHT: f32 = 0.4;
+
 /// Mouse sensitivity for look
 pub const MOUSE_SENSITIVITY: f32 = 0.003;
 

@@ -4,12 +4,14 @@
 
 use bevy::prelude::*;
 use bevy::mesh::{Indices, VertexAttributeValues};
-use bevy::render::render_resource::PrimitiveTopology;
+use bevy::render::render_resource::{PrimitiveTopology, Extent3d, TextureDimension, TextureFormat};
 use bevy::asset::RenderAssetUsages;
+use bevy::image::{ImageSampler, ImageAddressMode, ImageSamplerDescriptor, ImageFilterMode};
+use noise::{NoiseFn, Perlin, Fbm, MultiFractal};
 use std::collections::HashSet;
 
 use shared::{
-    ChunkCoord, LocalPlayer, PlayerPosition, WorldTerrain,  VIEW_DISTANCE,
+    ChunkCoord, LocalPlayer, PlayerPosition, WorldTerrain, VIEW_DISTANCE, WORLD_SEED,
 };
 
 use crate::states::GameState;
@@ -33,6 +35,11 @@ pub struct TerrainStreamingState {
 #[derive(Resource)]
 pub struct TerrainRenderAssets {
     pub material: Handle<StandardMaterial>,
+    // Texture handles kept alive to prevent GPU resource cleanup
+    #[allow(dead_code)]
+    detail_texture: Handle<Image>,
+    #[allow(dead_code)]
+    normal_map: Handle<Image>,
 }
 
 /// Resource tracking which chunks are currently loaded
@@ -59,22 +66,167 @@ impl Plugin for TerrainPlugin {
     }
 }
 
+/// Generate a procedural noise texture for terrain detail
+fn generate_detail_texture(size: u32) -> Image {
+    let fbm: Fbm<Perlin> = Fbm::new(WORLD_SEED)
+        .set_octaves(3)
+        .set_frequency(1.0)
+        .set_persistence(0.4);
+    
+    let mut data = Vec::with_capacity((size * size * 4) as usize);
+    
+    for y in 0..size {
+        for x in 0..size {
+            // Normalize to 0-1 range for seamless tiling
+            let nx = x as f64 / size as f64;
+            let ny = y as f64 / size as f64;
+            
+            // Single noise layer with subtle variation
+            let scale = 6.0;
+            let noise = fbm.get([nx * scale, ny * scale]) as f32;
+            
+            // Very subtle variation: 0.94 - 1.0 range (only 6% darkening max)
+            // This keeps sand bright while adding just enough texture to break uniformity
+            let value = ((noise * 0.5 + 0.5) * 0.06 + 0.94).clamp(0.94, 1.0);
+            let byte = (value * 255.0) as u8;
+            
+            data.push(byte); // R
+            data.push(byte); // G
+            data.push(byte); // B
+            data.push(255);  // A
+        }
+    }
+    
+    let mut image = Image::new(
+        Extent3d {
+            width: size,
+            height: size,
+            depth_or_array_layers: 1,
+        },
+        TextureDimension::D2,
+        data,
+        TextureFormat::Rgba8UnormSrgb,
+        RenderAssetUsages::RENDER_WORLD,
+    );
+    
+    // Enable seamless tiling
+    image.sampler = ImageSampler::Descriptor(ImageSamplerDescriptor {
+        address_mode_u: ImageAddressMode::Repeat,
+        address_mode_v: ImageAddressMode::Repeat,
+        address_mode_w: ImageAddressMode::Repeat,
+        mag_filter: ImageFilterMode::Linear,
+        min_filter: ImageFilterMode::Linear,
+        mipmap_filter: ImageFilterMode::Linear,
+        ..default()
+    });
+    
+    image
+}
+
+/// Generate a procedural normal map for surface bumps
+fn generate_normal_map(size: u32) -> Image {
+    let fbm: Fbm<Perlin> = Fbm::new(WORLD_SEED.wrapping_add(1000))
+        .set_octaves(3)
+        .set_frequency(1.0)
+        .set_persistence(0.5);
+    
+    // First pass: generate height values
+    let mut heights = vec![0.0f32; (size * size) as usize];
+    for y in 0..size {
+        for x in 0..size {
+            let nx = x as f64 / size as f64;
+            let ny = y as f64 / size as f64;
+            
+            let scale = 5.0; // Larger scale = softer bumps
+            let height = fbm.get([nx * scale, ny * scale]) as f32;
+            heights[(y * size + x) as usize] = height;
+        }
+    }
+    
+    // Second pass: compute normals from height differences
+    let mut data = Vec::with_capacity((size * size * 4) as usize);
+    let strength = 0.6; // Subtle bumps - sand is relatively smooth
+    
+    for y in 0..size {
+        for x in 0..size {
+            // Sample neighbors (with wrapping for seamless tiling)
+            let left = heights[(y * size + (x + size - 1) % size) as usize];
+            let right = heights[(y * size + (x + 1) % size) as usize];
+            let up = heights[((y + size - 1) % size * size + x) as usize];
+            let down = heights[((y + 1) % size * size + x) as usize];
+            
+            // Compute normal from height gradient
+            let dx = (right - left) * strength;
+            let dy = (down - up) * strength;
+            
+            // Normal in tangent space (Z-up convention for normal maps)
+            let normal = Vec3::new(-dx, -dy, 1.0).normalize();
+            
+            // Map from [-1,1] to [0,255]
+            data.push(((normal.x * 0.5 + 0.5) * 255.0) as u8); // R
+            data.push(((normal.y * 0.5 + 0.5) * 255.0) as u8); // G
+            data.push(((normal.z * 0.5 + 0.5) * 255.0) as u8); // B
+            data.push(255); // A
+        }
+    }
+    
+    let mut image = Image::new(
+        Extent3d {
+            width: size,
+            height: size,
+            depth_or_array_layers: 1,
+        },
+        TextureDimension::D2,
+        data,
+        TextureFormat::Rgba8Unorm, // Normal maps use linear color space
+        RenderAssetUsages::RENDER_WORLD,
+    );
+    
+    // Enable seamless tiling
+    image.sampler = ImageSampler::Descriptor(ImageSamplerDescriptor {
+        address_mode_u: ImageAddressMode::Repeat,
+        address_mode_v: ImageAddressMode::Repeat,
+        address_mode_w: ImageAddressMode::Repeat,
+        mag_filter: ImageFilterMode::Linear,
+        min_filter: ImageFilterMode::Linear,
+        mipmap_filter: ImageFilterMode::Linear,
+        ..default()
+    });
+    
+    image
+}
+
 /// Create shared terrain material once.
 fn setup_terrain_render_assets(
     mut commands: Commands,
     mut materials: ResMut<Assets<StandardMaterial>>,
+    mut images: ResMut<Assets<Image>>,
 ) {
-    // Vertex colors provide biome tint/variation; keep base color white to preserve them.
-    // Lower roughness keeps terrain colors vivid under sunlight.
+    // Generate procedural textures
+    let detail_texture = images.add(generate_detail_texture(256));
+    let normal_map = images.add(generate_normal_map(256));
+    
+    // Terrain material with procedural textures
+    // Vertex colors provide biome tint; detail texture adds surface variation
     let material = materials.add(StandardMaterial {
         base_color: Color::WHITE,
-        perceptual_roughness: 0.65,
+        base_color_texture: Some(detail_texture.clone()),
+        normal_map_texture: Some(normal_map.clone()),
+        perceptual_roughness: 0.85, // Higher roughness = less shiny/clay-like
         metallic: 0.0,
-        reflectance: 0.3, // subtle specular highlight on wet/sandy surfaces
+        reflectance: 0.2,
+        // UV tiling: repeat texture every 8 meters for good detail density
+        uv_transform: bevy::math::Affine2::from_scale(Vec2::splat(8.0)),
         ..default()
     });
 
-    commands.insert_resource(TerrainRenderAssets { material });
+    commands.insert_resource(TerrainRenderAssets { 
+        material,
+        detail_texture,
+        normal_map,
+    });
+    
+    info!("Generated procedural terrain textures (256x256 detail + normal map)");
 }
 
 /// Determine which chunks should be loaded based on player position

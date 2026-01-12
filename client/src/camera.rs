@@ -21,7 +21,7 @@ const FOV_ADS: f32 = 45.0_f32.to_radians();      // Zoomed FOV when ADS
 const FOV_SNIPER_ADS: f32 = 25.0_f32.to_radians(); // Extra zoom for sniper
 
 /// Helper to convert PeerId to u64 for driver tracking
-fn peer_id_to_u64(peer_id: PeerId) -> u64 {
+pub fn peer_id_to_u64(peer_id: PeerId) -> u64 {
     match peer_id {
         PeerId::Netcode(id) => id,
         PeerId::Steam(id) => id,

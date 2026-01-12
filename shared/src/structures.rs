@@ -1,0 +1,364 @@
+//! Desert settlement structures - Dune-inspired buildings
+//!
+//! Procedurally generated structures that spawn in desert settlement zones.
+//! These are spawned deterministically based on world seed.
+
+use bevy::prelude::*;
+use noise::{NoiseFn, Perlin};
+use serde::{Deserialize, Serialize};
+
+use crate::terrain::{ChunkCoord, SettlementInfo, TerrainGenerator, CHUNK_SIZE, WORLD_SEED};
+
+/// Types of desert structures (Dune-inspired)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum DesertStructureKind {
+    /// Small dome dwelling (3-4m radius)
+    SmallDome,
+    /// Large central dome (6-8m radius)
+    LargeDome,
+    /// Curved defensive/boundary wall segment
+    CurvedWall,
+    /// Tall cylindrical watchtower
+    WatchTower,
+    /// Entrance archway
+    Archway,
+    /// Cylindrical storage silo
+    StorageSilo,
+    /// Small decorative lamp post
+    DesertLamp,
+}
+
+impl DesertStructureKind {
+    /// Get the base radius of this structure type (used for placement)
+    pub fn base_radius(&self) -> f32 {
+        match self {
+            DesertStructureKind::SmallDome => 3.5,
+            DesertStructureKind::LargeDome => 7.0,
+            DesertStructureKind::CurvedWall => 2.0,
+            DesertStructureKind::WatchTower => 2.5,
+            DesertStructureKind::Archway => 3.0,
+            DesertStructureKind::StorageSilo => 2.0,
+            DesertStructureKind::DesertLamp => 0.3,
+        }
+    }
+
+    /// Get the height of this structure type
+    pub fn height(&self) -> f32 {
+        match self {
+            DesertStructureKind::SmallDome => 4.0,
+            DesertStructureKind::LargeDome => 8.0,
+            DesertStructureKind::CurvedWall => 3.5,
+            DesertStructureKind::WatchTower => 12.0,
+            DesertStructureKind::Archway => 5.0,
+            DesertStructureKind::StorageSilo => 5.0,
+            DesertStructureKind::DesertLamp => 2.5,
+        }
+    }
+
+    /// Stable string ID for serialization
+    pub fn id(&self) -> &'static str {
+        match self {
+            DesertStructureKind::SmallDome => "small_dome",
+            DesertStructureKind::LargeDome => "large_dome",
+            DesertStructureKind::CurvedWall => "curved_wall",
+            DesertStructureKind::WatchTower => "watch_tower",
+            DesertStructureKind::Archway => "archway",
+            DesertStructureKind::StorageSilo => "storage_silo",
+            DesertStructureKind::DesertLamp => "desert_lamp",
+        }
+    }
+}
+
+/// A structure spawn instance
+#[derive(Debug, Clone)]
+pub struct StructureSpawn {
+    pub kind: DesertStructureKind,
+    pub position: Vec3,
+    pub rotation: Quat,
+    pub scale: f32,
+    /// Which settlement this structure belongs to
+    pub settlement_center: Vec2,
+}
+
+/// Collision shape for a structure
+#[derive(Debug, Clone)]
+pub enum StructureCollider {
+    /// Hemisphere dome (radius, height)
+    Dome { radius: f32, height: f32 },
+    /// Cylinder (radius, height)
+    Cylinder { radius: f32, height: f32 },
+    /// Box (half extents)
+    Box { half_extents: Vec3 },
+    /// Arch (width, height, depth, thickness)
+    Arch { width: f32, height: f32, depth: f32, thickness: f32 },
+}
+
+impl DesertStructureKind {
+    /// Get the collision shape for this structure type at scale 1.0
+    pub fn collider(&self) -> StructureCollider {
+        match self {
+            DesertStructureKind::SmallDome => StructureCollider::Dome {
+                radius: 3.5,
+                height: 4.0,
+            },
+            DesertStructureKind::LargeDome => StructureCollider::Dome {
+                radius: 7.0,
+                height: 8.0,
+            },
+            DesertStructureKind::CurvedWall => StructureCollider::Box {
+                half_extents: Vec3::new(4.0, 1.75, 0.5),
+            },
+            DesertStructureKind::WatchTower => StructureCollider::Cylinder {
+                radius: 2.5,
+                height: 12.0,
+            },
+            DesertStructureKind::Archway => StructureCollider::Arch {
+                width: 6.0,
+                height: 5.0,
+                depth: 2.0,
+                thickness: 1.0,
+            },
+            DesertStructureKind::StorageSilo => StructureCollider::Cylinder {
+                radius: 2.0,
+                height: 5.0,
+            },
+            DesertStructureKind::DesertLamp => StructureCollider::Cylinder {
+                radius: 0.3,
+                height: 2.5,
+            },
+        }
+    }
+}
+
+/// Generate all structures for a settlement
+fn generate_settlement_structures(
+    settlement: &SettlementInfo,
+    structure_noise: &Perlin,
+    placement_noise: &Perlin,
+) -> Vec<StructureSpawn> {
+    let mut structures = Vec::new();
+    let center = settlement.center;
+    let base_y = settlement.base_height;
+
+    // Noise values for variety
+    let variety = structure_noise.get([center.x as f64 * 0.05, center.y as f64 * 0.05]) as f32;
+    let variety2 = structure_noise.get([center.y as f64 * 0.05, center.x as f64 * 0.05]) as f32;
+
+    // 1. Place the main large dome at center
+    structures.push(StructureSpawn {
+        kind: DesertStructureKind::LargeDome,
+        position: Vec3::new(center.x, base_y, center.y),
+        rotation: Quat::from_rotation_y(variety * std::f32::consts::TAU),
+        scale: 1.0 + variety.abs() * 0.1,
+        settlement_center: center,
+    });
+
+    // 2. Place 4-7 small domes in a ring around center
+    let num_small_domes = 4 + ((variety.abs() * 4.0) as usize).min(3);
+    let dome_ring_radius = 18.0 + variety2.abs() * 5.0;
+
+    for i in 0..num_small_domes {
+        let angle = (i as f32 / num_small_domes as f32) * std::f32::consts::TAU
+            + variety * 0.5; // Offset for variety
+
+        // Add some jitter to position
+        let jitter = placement_noise.get([
+            (center.x + angle * 10.0) as f64 * 0.1,
+            (center.y + angle * 10.0) as f64 * 0.1,
+        ]) as f32;
+        let radius = dome_ring_radius + jitter * 4.0;
+
+        let pos_x = center.x + angle.cos() * radius;
+        let pos_z = center.y + angle.sin() * radius;
+
+        structures.push(StructureSpawn {
+            kind: DesertStructureKind::SmallDome,
+            position: Vec3::new(pos_x, base_y, pos_z),
+            rotation: Quat::from_rotation_y(angle + std::f32::consts::PI), // Face center
+            scale: 0.8 + jitter.abs() * 0.4,
+            settlement_center: center,
+        });
+    }
+
+    // 3. Place curved walls forming partial enclosure
+    let num_walls = 5 + ((variety2.abs() * 4.0) as usize).min(3);
+    let wall_ring_radius = 35.0 + variety.abs() * 8.0;
+    let wall_arc_start = variety * std::f32::consts::PI; // Random starting point
+    let wall_arc_span = std::f32::consts::PI * 1.2; // ~216 degrees of coverage
+
+    for i in 0..num_walls {
+        let t = i as f32 / num_walls as f32;
+        let angle = wall_arc_start + t * wall_arc_span;
+
+        let pos_x = center.x + angle.cos() * wall_ring_radius;
+        let pos_z = center.y + angle.sin() * wall_ring_radius;
+
+        structures.push(StructureSpawn {
+            kind: DesertStructureKind::CurvedWall,
+            position: Vec3::new(pos_x, base_y, pos_z),
+            rotation: Quat::from_rotation_y(angle + std::f32::consts::FRAC_PI_2), // Perpendicular to radius
+            scale: 1.0,
+            settlement_center: center,
+        });
+    }
+
+    // 4. Place archway at the gap in the walls (entrance)
+    let archway_angle = wall_arc_start + wall_arc_span + std::f32::consts::FRAC_PI_4;
+    let archway_radius = wall_ring_radius - 2.0;
+    structures.push(StructureSpawn {
+        kind: DesertStructureKind::Archway,
+        position: Vec3::new(
+            center.x + archway_angle.cos() * archway_radius,
+            base_y,
+            center.y + archway_angle.sin() * archway_radius,
+        ),
+        rotation: Quat::from_rotation_y(archway_angle + std::f32::consts::FRAC_PI_2),
+        scale: 1.0,
+        settlement_center: center,
+    });
+
+    // 5. Watchtower (~70% chance)
+    if variety > -0.3 {
+        let tower_angle = wall_arc_start + wall_arc_span * 0.5;
+        let tower_radius = wall_ring_radius + 3.0;
+        structures.push(StructureSpawn {
+            kind: DesertStructureKind::WatchTower,
+            position: Vec3::new(
+                center.x + tower_angle.cos() * tower_radius,
+                base_y,
+                center.y + tower_angle.sin() * tower_radius,
+            ),
+            rotation: Quat::IDENTITY,
+            scale: 1.0,
+            settlement_center: center,
+        });
+    }
+
+    // 6. Storage silos (2-4)
+    let num_silos = 2 + ((variety2.abs() * 3.0) as usize).min(2);
+    for i in 0..num_silos {
+        let silo_angle = variety2 * std::f32::consts::TAU + (i as f32 * 1.5);
+        let silo_radius = 10.0 + (i as f32 * 3.0);
+
+        let jitter = placement_noise.get([
+            (center.x + silo_angle * 20.0) as f64 * 0.1,
+            (center.y + silo_angle * 20.0) as f64 * 0.1,
+        ]) as f32;
+
+        structures.push(StructureSpawn {
+            kind: DesertStructureKind::StorageSilo,
+            position: Vec3::new(
+                center.x + silo_angle.cos() * silo_radius + jitter * 2.0,
+                base_y,
+                center.y + silo_angle.sin() * silo_radius + jitter * 2.0,
+            ),
+            rotation: Quat::IDENTITY,
+            scale: 0.9 + jitter.abs() * 0.2,
+            settlement_center: center,
+        });
+    }
+
+    // 7. Desert lamps scattered throughout the settlement (6-10)
+    let num_lamps = 6 + ((variety.abs() * 5.0) as usize).min(4);
+    for i in 0..num_lamps {
+        let lamp_noise = placement_noise.get([
+            (center.x + i as f32 * 7.3) as f64 * 0.15,
+            (center.y + i as f32 * 11.7) as f64 * 0.15,
+        ]) as f32;
+        let lamp_noise2 = placement_noise.get([
+            (center.y + i as f32 * 13.1) as f64 * 0.15,
+            (center.x + i as f32 * 5.9) as f64 * 0.15,
+        ]) as f32;
+
+        // Place lamps at various radii throughout the settlement
+        let lamp_radius = 8.0 + (i as f32 * 4.0) + lamp_noise * 5.0;
+        let lamp_angle = (i as f32 / num_lamps as f32) * std::f32::consts::TAU + lamp_noise2 * 0.8;
+
+        structures.push(StructureSpawn {
+            kind: DesertStructureKind::DesertLamp,
+            position: Vec3::new(
+                center.x + lamp_angle.cos() * lamp_radius,
+                base_y,
+                center.y + lamp_angle.sin() * lamp_radius,
+            ),
+            rotation: Quat::IDENTITY,
+            scale: 0.9 + lamp_noise.abs() * 0.2,
+            settlement_center: center,
+        });
+    }
+
+    structures
+}
+
+/// Generate all structure spawns for a chunk
+/// Returns structures that intersect with this chunk
+pub fn generate_chunk_structures(terrain: &TerrainGenerator, chunk: ChunkCoord) -> Vec<StructureSpawn> {
+    let settlements = terrain.get_settlements_near_chunk(chunk);
+
+    if settlements.is_empty() {
+        return Vec::new();
+    }
+
+    // Deterministic noise for structure placement
+    let structure_noise = Perlin::new(WORLD_SEED.wrapping_add(9000));
+    let placement_noise = Perlin::new(WORLD_SEED.wrapping_add(9500));
+
+    let chunk_origin = chunk.world_pos();
+    let chunk_min = Vec2::new(chunk_origin.x, chunk_origin.z);
+    let chunk_max = Vec2::new(chunk_origin.x + CHUNK_SIZE, chunk_origin.z + CHUNK_SIZE);
+
+    let mut out = Vec::new();
+
+    for settlement in &settlements {
+        let structures = generate_settlement_structures(settlement, &structure_noise, &placement_noise);
+
+        // Filter to structures that intersect this chunk
+        for structure in structures {
+            let pos_2d = Vec2::new(structure.position.x, structure.position.z);
+            let radius = structure.kind.base_radius() * structure.scale;
+
+            // Simple AABB check for structure circle vs chunk rect
+            let closest_x = pos_2d.x.clamp(chunk_min.x, chunk_max.x);
+            let closest_z = pos_2d.y.clamp(chunk_min.y, chunk_max.y);
+            let dist_sq = (pos_2d.x - closest_x).powi(2) + (pos_2d.y - closest_z).powi(2);
+
+            if dist_sq <= radius * radius {
+                out.push(structure);
+            }
+        }
+    }
+
+    out
+}
+
+/// Check if a position is inside any structure's footprint
+/// Used to prevent prop spawning inside buildings
+pub fn is_inside_structure(x: f32, z: f32, structures: &[StructureSpawn]) -> bool {
+    for structure in structures {
+        let dx = x - structure.position.x;
+        let dz = z - structure.position.z;
+        let dist_sq = dx * dx + dz * dz;
+        let radius = structure.kind.base_radius() * structure.scale * 1.5; // Add padding
+
+        if dist_sq < radius * radius {
+            return true;
+        }
+    }
+    false
+}
+
+/// Get all structures that could affect a given world position
+pub fn get_structures_at(terrain: &TerrainGenerator, x: f32, z: f32) -> Vec<StructureSpawn> {
+    let chunk = ChunkCoord::from_world_pos(Vec3::new(x, 0.0, z));
+
+    // Check this chunk and neighbors (structures can span chunks)
+    let mut all_structures = Vec::new();
+    for dx in -1..=1 {
+        for dz in -1..=1 {
+            let neighbor = ChunkCoord::new(chunk.x + dx, chunk.z + dz);
+            all_structures.extend(generate_chunk_structures(terrain, neighbor));
+        }
+    }
+
+    all_structures
+}

@@ -97,6 +97,24 @@ impl ChunkCoord {
     }
 }
 
+/// Settlement zone radius in meters
+pub const SETTLEMENT_RADIUS: f32 = 50.0;
+/// Settlement spawn spacing (grid cells)
+pub const SETTLEMENT_GRID_SIZE: f32 = 400.0;
+/// Minimum distance from world spawn to place settlements
+pub const SETTLEMENT_MIN_SPAWN_DIST: f32 = 200.0;
+
+/// Information about a desert settlement zone
+#[derive(Debug, Clone, Copy)]
+pub struct SettlementInfo {
+    /// Center position of the settlement in world coordinates
+    pub center: Vec2,
+    /// Radius of the flattened zone
+    pub radius: f32,
+    /// Base height of the flattened terrain
+    pub base_height: f32,
+}
+
 /// Terrain generator using Perlin noise
 pub struct TerrainGenerator {
     height_noise: Perlin,
@@ -104,6 +122,7 @@ pub struct TerrainGenerator {
     biome_noise_2: Perlin, // Secondary noise for natureland placement
     dune_noise: Perlin,
     detail_noise: Perlin,
+    settlement_noise: Perlin, // Noise for determining settlement locations
     #[allow(dead_code)]
     seed: u32,
 }
@@ -116,8 +135,120 @@ impl TerrainGenerator {
             biome_noise_2: Perlin::new(seed.wrapping_add(1500)),
             dune_noise: Perlin::new(seed.wrapping_add(2000)),
             detail_noise: Perlin::new(seed.wrapping_add(3000)),
+            settlement_noise: Perlin::new(seed.wrapping_add(8000)),
             seed,
         }
+    }
+
+    /// Check if a grid cell should have a settlement
+    /// Uses deterministic noise to decide (~15% of valid desert cells)
+    fn cell_has_settlement(&self, cell_x: i32, cell_z: i32) -> bool {
+        // DEBUG: Force a settlement at cell (0, 1) for testing - remove this line when done!
+        if cell_x == 0 && cell_z == 1 {
+            return true;
+        }
+        
+        // Use noise at cell center for deterministic decision
+        let cx = cell_x as f64 * SETTLEMENT_GRID_SIZE as f64 + SETTLEMENT_GRID_SIZE as f64 * 0.5;
+        let cz = cell_z as f64 * SETTLEMENT_GRID_SIZE as f64 + SETTLEMENT_GRID_SIZE as f64 * 0.5;
+        
+        // Check if cell center is in desert biome
+        if self.get_biome(cx as f32, cz as f32) != Biome::Desert {
+            return false;
+        }
+        
+        // Check minimum distance from spawn
+        let dist_from_spawn = ((cx * cx + cz * cz) as f32).sqrt();
+        if dist_from_spawn < SETTLEMENT_MIN_SPAWN_DIST {
+            return false;
+        }
+        
+        // Deterministic probability based on noise
+        let noise_val = self.settlement_noise.get([cx * 0.01, cz * 0.01]) as f32;
+        noise_val > 0.4 // ~15% of valid cells
+    }
+
+    /// Get the settlement center for a given grid cell (with jitter)
+    fn get_cell_settlement_center(&self, cell_x: i32, cell_z: i32) -> Vec2 {
+        let base_x = cell_x as f32 * SETTLEMENT_GRID_SIZE + SETTLEMENT_GRID_SIZE * 0.5;
+        let base_z = cell_z as f32 * SETTLEMENT_GRID_SIZE + SETTLEMENT_GRID_SIZE * 0.5;
+        
+        // Add deterministic jitter so settlements aren't on a perfect grid
+        let jitter_x = self.settlement_noise.get([base_x as f64 * 0.1, base_z as f64 * 0.1]) as f32
+            * SETTLEMENT_GRID_SIZE * 0.2;
+        let jitter_z = self.settlement_noise.get([base_z as f64 * 0.1, base_x as f64 * 0.1]) as f32
+            * SETTLEMENT_GRID_SIZE * 0.2;
+        
+        Vec2::new(base_x + jitter_x, base_z + jitter_z)
+    }
+
+    /// Check if a world position is within a settlement zone
+    /// Returns settlement info if in a settlement, None otherwise
+    pub fn get_settlement_at(&self, x: f32, z: f32) -> Option<SettlementInfo> {
+        // Determine which grid cell this position is in
+        let cell_x = (x / SETTLEMENT_GRID_SIZE).floor() as i32;
+        let cell_z = (z / SETTLEMENT_GRID_SIZE).floor() as i32;
+        
+        // Check this cell and adjacent cells (settlement could overlap)
+        for dx in -1..=1 {
+            for dz in -1..=1 {
+                let cx = cell_x + dx;
+                let cz = cell_z + dz;
+                
+                if self.cell_has_settlement(cx, cz) {
+                    let center = self.get_cell_settlement_center(cx, cz);
+                    let dist = ((x - center.x).powi(2) + (z - center.y).powi(2)).sqrt();
+                    
+                    if dist < SETTLEMENT_RADIUS {
+                        // Calculate base height at center (without settlement flattening)
+                        let base_height = self.get_desert_height_raw(center.x, center.y);
+                        
+                        return Some(SettlementInfo {
+                            center,
+                            radius: SETTLEMENT_RADIUS,
+                            base_height,
+                        });
+                    }
+                }
+            }
+        }
+        
+        None
+    }
+
+    /// Check if position is in a settlement zone (convenience method)
+    pub fn is_in_settlement(&self, x: f32, z: f32) -> bool {
+        self.get_settlement_at(x, z).is_some()
+    }
+
+    /// Get all settlement centers that could affect a chunk
+    pub fn get_settlements_near_chunk(&self, chunk: ChunkCoord) -> Vec<SettlementInfo> {
+        let origin = chunk.world_pos();
+        let mut settlements = Vec::new();
+        
+        // Check a wide area around the chunk
+        let check_radius = SETTLEMENT_RADIUS + CHUNK_SIZE;
+        let min_cell_x = ((origin.x - check_radius) / SETTLEMENT_GRID_SIZE).floor() as i32;
+        let max_cell_x = ((origin.x + CHUNK_SIZE + check_radius) / SETTLEMENT_GRID_SIZE).ceil() as i32;
+        let min_cell_z = ((origin.z - check_radius) / SETTLEMENT_GRID_SIZE).floor() as i32;
+        let max_cell_z = ((origin.z + CHUNK_SIZE + check_radius) / SETTLEMENT_GRID_SIZE).ceil() as i32;
+        
+        for cx in min_cell_x..=max_cell_x {
+            for cz in min_cell_z..=max_cell_z {
+                if self.cell_has_settlement(cx, cz) {
+                    let center = self.get_cell_settlement_center(cx, cz);
+                    let base_height = self.get_desert_height_raw(center.x, center.y);
+                    
+                    settlements.push(SettlementInfo {
+                        center,
+                        radius: SETTLEMENT_RADIUS,
+                        base_height,
+                    });
+                }
+            }
+        }
+        
+        settlements
     }
 
     /// Get the biome blend value at a world position
@@ -241,7 +372,32 @@ impl TerrainGenerator {
     }
 
     /// Desert terrain: sharp dune ridges with wide valleys between them
+    /// This version applies settlement flattening
     fn get_desert_height(&self, x: f32, z: f32) -> f32 {
+        let raw_height = self.get_desert_height_raw(x, z);
+        
+        // Check if we're in a settlement zone
+        if let Some(settlement) = self.get_settlement_at(x, z) {
+            let dist = ((x - settlement.center.x).powi(2) + (z - settlement.center.y).powi(2)).sqrt();
+            let edge_start = settlement.radius * 0.7; // Start blending at 70% of radius
+            
+            if dist < edge_start {
+                // Fully flattened interior
+                settlement.base_height
+            } else {
+                // Smooth blend at edges using smoothstep
+                let t = (dist - edge_start) / (settlement.radius - edge_start);
+                let smooth_t = t * t * (3.0 - 2.0 * t);
+                settlement.base_height * (1.0 - smooth_t) + raw_height * smooth_t
+            }
+        } else {
+            raw_height
+        }
+    }
+
+    /// Raw desert height without settlement flattening
+    /// Used internally to calculate base heights for settlements
+    fn get_desert_height_raw(&self, x: f32, z: f32) -> f32 {
         // Very gentle base undulation (massive smooth hills)
         let base_scale = 0.002; // Features every ~500m
         let base = self.height_noise.get([

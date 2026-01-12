@@ -1,0 +1,25 @@
+# Ignore build artifacts
+target/
+
+# Ignore client (not needed for server deployment)
+client/
+
+# Ignore tools
+tools/
+
+# Ignore git
+.git/
+.gitignore
+
+# Ignore IDE/editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Ignore docs/readme
+README.md
+*.md
+
+# Ignore local scripts
+run.sh

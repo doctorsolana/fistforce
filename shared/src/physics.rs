@@ -103,12 +103,21 @@ pub fn step_character(
     velocity.0.z = horiz.z;
 
     // --- Ground check (for jumping) ---
+    // Check terrain ground
     let ground_y = terrain.get_height(position.0.x, position.0.z);
     let target_y = ground_y + ground_clearance_center();
-    let grounded = (position.0.y - target_y).abs() < GROUND_SNAP_DISTANCE || position.0.y <= target_y;
+    let on_terrain = (position.0.y - target_y).abs() < GROUND_SNAP_DISTANCE || position.0.y <= target_y;
+    
+    // Also consider grounded if not falling fast (standing/running on a structure)
+    // When running on curved surfaces like domes, there are small velocity fluctuations
+    // from the collision system constantly adjusting position - allow jumping through these
+    let not_falling_fast = velocity.0.y > -2.0;
+    
+    let grounded = on_terrain || not_falling_fast;
 
     // --- Jump ---
-    if input.jump && grounded && velocity.0.y <= 0.0 {
+    // Allow jump if grounded and not already moving up significantly
+    if input.jump && grounded && velocity.0.y < 1.0 {
         velocity.0.y = JUMP_VELOCITY;
     }
 

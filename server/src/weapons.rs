@@ -15,6 +15,8 @@ use shared::{
     Player, PlayerPosition, WorldTerrain, FIXED_TIMESTEP_HZ, PLAYER_HEIGHT, PLAYER_RADIUS,
 };
 
+use crate::colliders::{DerivedColliderLibrary, StaticColliders, StructureColliders};
+
 /// Server-only marker used to delay bullet despawn by a few frames.
 ///
 /// This prevents clients from receiving a despawn for a bullet entity that was
@@ -497,13 +499,16 @@ fn ray_sphere_intersection(
     (d <= effective).then_some(p)
 }
 
-/// Detect bullet hits against world geometry
+/// Detect bullet hits against world geometry (terrain, practice wall, props, structures)
 pub fn detect_bullet_world_hits(
     mut commands: Commands,
     time: Res<Time>,
     bullets: Query<(Entity, &Bullet, &BulletPrevPosition, &Transform), Without<BulletPendingDespawn>>,
     terrain: Res<WorldTerrain>,
     _players: Query<&Player>,
+    derived_colliders: Option<Res<DerivedColliderLibrary>>,
+    static_colliders: Res<StaticColliders>,
+    structure_colliders: Res<StructureColliders>,
     mut client_links: Query<(&RemoteId, &mut MessageSender<BulletImpact>), With<ClientOf>>,
 ) {
     // Wall is 50m north of spawn, facing south
@@ -539,14 +544,38 @@ pub fn detect_bullet_world_hits(
 
         let mut best_hit: Option<(f32, Vec3, Vec3, BulletImpactSurface)> = None;
 
+        // Check practice wall
         if let Some((t, hit_point, hit_normal)) = segment_aabb_intersection(start, end, wall_min, wall_max) {
             best_hit = Some((t, hit_point, hit_normal, BulletImpactSurface::PracticeWall));
         }
 
+        // Check terrain
         if let Some((t, hit_point, hit_normal)) = segment_terrain_intersection(&terrain, start, end) {
             match best_hit {
                 Some((best_t, _, _, _)) if best_t <= t => {}
                 _ => best_hit = Some((t, hit_point, hit_normal, BulletImpactSurface::Terrain)),
+            }
+        }
+
+        // Check static props (trees, rocks, etc.)
+        if let Some(ref derived) = derived_colliders {
+            if let Some((t, hit_point, hit_normal)) = segment_props_intersection(
+                start, end, &static_colliders, derived,
+            ) {
+                match best_hit {
+                    Some((best_t, _, _, _)) if best_t <= t => {}
+                    _ => best_hit = Some((t, hit_point, hit_normal, BulletImpactSurface::Terrain)), // Use Terrain surface for props
+                }
+            }
+        }
+
+        // Check structures (domes, walls, towers, etc.)
+        if let Some((t, hit_point, hit_normal)) = segment_structures_intersection(
+            start, end, &structure_colliders,
+        ) {
+            match best_hit {
+                Some((best_t, _, _, _)) if best_t <= t => {}
+                _ => best_hit = Some((t, hit_point, hit_normal, BulletImpactSurface::PracticeWall)), // Use wall surface for structures
             }
         }
 
@@ -753,6 +782,336 @@ fn segment_terrain_intersection(
         prev_t = t;
     }
 
+    None
+}
+
+/// Test ray segment against static props (trees, rocks, etc.)
+/// Returns (t, hit_point, hit_normal) for the closest hit
+fn segment_props_intersection(
+    start: Vec3,
+    end: Vec3,
+    colliders: &StaticColliders,
+    derived: &DerivedColliderLibrary,
+) -> Option<(f32, Vec3, Vec3)> {
+    let dir = end - start;
+    let length = dir.length();
+    if length < 1e-4 {
+        return None;
+    }
+    let ray_dir = dir / length;
+
+    let mut best_hit: Option<(f32, Vec3, Vec3)> = None;
+
+    // Get midpoint for spatial query
+    let mid = (start + end) * 0.5;
+    let query_radius = length * 0.5 + 5.0; // Extra margin for large props
+
+    // Find nearby props using spatial hash
+    let cell_size = 16.0; // Must match COLLIDER_CELL_SIZE in colliders.rs
+    let cx = (mid.x / cell_size).floor() as i32;
+    let cz = (mid.z / cell_size).floor() as i32;
+    let cells = (query_radius / cell_size).ceil() as i32 + 1;
+
+    for dx in -cells..=cells {
+        for dz in -cells..=cells {
+            let Some(ids) = colliders.cells.get(&(cx + dx, cz + dz)) else {
+                continue;
+            };
+
+            for &id in ids {
+                let Some(inst) = colliders.instances.get(&id) else {
+                    continue;
+                };
+                let Some(shape) = derived.by_kind.get(&inst.kind) else {
+                    continue;
+                };
+
+                // Broad phase: bounding sphere
+                let bounding_r = shape.bounding_radius * inst.scale;
+                let to_prop = mid - inst.position;
+                if to_prop.length() > query_radius + bounding_r {
+                    continue;
+                }
+
+                // Test ray against each face of the hull
+                for face in &shape.hull_faces {
+                    // Transform face vertices to world space
+                    let v0 = inst.position + inst.rotation * (face.vertices[0] * inst.scale);
+                    let v1 = inst.position + inst.rotation * (face.vertices[1] * inst.scale);
+                    let v2 = inst.position + inst.rotation * (face.vertices[2] * inst.scale);
+                    let world_normal = inst.rotation * face.normal;
+
+                    // Ray-triangle intersection (Möller–Trumbore)
+                    if let Some((t, hit_point)) = ray_triangle_intersection(
+                        start, ray_dir, length, v0, v1, v2,
+                    ) {
+                        match best_hit {
+                            Some((best_t, _, _)) if best_t <= t => {}
+                            _ => best_hit = Some((t, hit_point, world_normal)),
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    best_hit
+}
+
+/// Möller–Trumbore ray-triangle intersection
+fn ray_triangle_intersection(
+    ray_origin: Vec3,
+    ray_dir: Vec3,
+    max_t: f32,
+    v0: Vec3,
+    v1: Vec3,
+    v2: Vec3,
+) -> Option<(f32, Vec3)> {
+    const EPSILON: f32 = 1e-6;
+
+    let edge1 = v1 - v0;
+    let edge2 = v2 - v0;
+    let h = ray_dir.cross(edge2);
+    let a = edge1.dot(h);
+
+    if a.abs() < EPSILON {
+        return None; // Ray is parallel to triangle
+    }
+
+    let f = 1.0 / a;
+    let s = ray_origin - v0;
+    let u = f * s.dot(h);
+
+    if u < 0.0 || u > 1.0 {
+        return None;
+    }
+
+    let q = s.cross(edge1);
+    let v = f * ray_dir.dot(q);
+
+    if v < 0.0 || u + v > 1.0 {
+        return None;
+    }
+
+    let t = f * edge2.dot(q);
+
+    if t > EPSILON && t <= max_t {
+        let hit_point = ray_origin + ray_dir * t;
+        Some((t, hit_point))
+    } else {
+        None
+    }
+}
+
+/// Check ray intersection against structures (domes, walls, towers, etc.)
+fn segment_structures_intersection(
+    start: Vec3,
+    end: Vec3,
+    colliders: &StructureColliders,
+) -> Option<(f32, Vec3, Vec3)> {
+    use shared::StructureCollider;
+    
+    let dir = end - start;
+    let length = dir.length();
+    if length < 1e-4 {
+        return None;
+    }
+    let ray_dir = dir / length;
+
+    let mut best_hit: Option<(f32, Vec3, Vec3)> = None;
+
+    // Get midpoint for spatial query
+    let mid = (start + end) * 0.5;
+    let query_radius = length * 0.5 + 15.0; // Extra margin for large structures
+
+    // Find nearby structures using spatial hash
+    let cell_size = 16.0;
+    let cx = (mid.x / cell_size).floor() as i32;
+    let cz = (mid.z / cell_size).floor() as i32;
+    let cells = (query_radius / cell_size).ceil() as i32 + 1;
+
+    for dx in -cells..=cells {
+        for dz in -cells..=cells {
+            let Some(ids) = colliders.cells.get(&(cx + dx, cz + dz)) else {
+                continue;
+            };
+
+            for &id in ids {
+                let Some(inst) = colliders.instances.get(&id) else {
+                    continue;
+                };
+
+                let collider = inst.kind.collider();
+                let pos = inst.position;
+                let scale = inst.scale;
+
+                // Test ray against structure based on its collision shape
+                let hit = match collider {
+                    StructureCollider::Dome { radius, height } => {
+                        ray_dome_intersection(start, ray_dir, length, pos, radius * scale, height * scale)
+                    }
+                    StructureCollider::Cylinder { radius, height } => {
+                        ray_cylinder_intersection(start, ray_dir, length, pos, radius * scale, height * scale)
+                    }
+                    StructureCollider::Box { half_extents } => {
+                        let scaled = half_extents * scale;
+                        let min = pos - Vec3::new(scaled.x, 0.0, scaled.z);
+                        let max = pos + Vec3::new(scaled.x, scaled.y * 2.0, scaled.z);
+                        segment_aabb_intersection(start, end, min, max)
+                    }
+                    StructureCollider::Arch { width, height, depth, thickness } => {
+                        // Approximate arch as two pillars + top box
+                        let hw = width * 0.5 * scale;
+                        let hd = depth * 0.5 * scale;
+                        let th = thickness * scale;
+                        let h = height * scale;
+                        
+                        // Left pillar
+                        let left_min = pos + Vec3::new(-hw, 0.0, -hd);
+                        let left_max = pos + Vec3::new(-hw + th, h * 0.7, hd);
+                        if let Some(hit) = segment_aabb_intersection(start, end, left_min, left_max) {
+                            Some(hit)
+                        } else {
+                            // Right pillar
+                            let right_min = pos + Vec3::new(hw - th, 0.0, -hd);
+                            let right_max = pos + Vec3::new(hw, h * 0.7, hd);
+                            if let Some(hit) = segment_aabb_intersection(start, end, right_min, right_max) {
+                                Some(hit)
+                            } else {
+                                // Top span
+                                let top_min = pos + Vec3::new(-hw, h * 0.6, -hd);
+                                let top_max = pos + Vec3::new(hw, h, hd);
+                                segment_aabb_intersection(start, end, top_min, top_max)
+                            }
+                        }
+                    }
+                };
+
+                if let Some((t, hit_point, hit_normal)) = hit {
+                    match best_hit {
+                        Some((best_t, _, _)) if best_t <= t => {}
+                        _ => best_hit = Some((t, hit_point, hit_normal)),
+                    }
+                }
+            }
+        }
+    }
+
+    best_hit
+}
+
+/// Ray-dome intersection (hemisphere)
+fn ray_dome_intersection(
+    ray_origin: Vec3,
+    ray_dir: Vec3,
+    max_t: f32,
+    dome_pos: Vec3,
+    radius: f32,
+    height: f32,
+) -> Option<(f32, Vec3, Vec3)> {
+    // Scale Y to make it a hemisphere check
+    let height_ratio = height / radius;
+    let scaled_origin = Vec3::new(
+        ray_origin.x - dome_pos.x,
+        (ray_origin.y - dome_pos.y) / height_ratio,
+        ray_origin.z - dome_pos.z,
+    );
+    let scaled_dir = Vec3::new(ray_dir.x, ray_dir.y / height_ratio, ray_dir.z).normalize();
+    
+    // Sphere intersection in scaled space
+    let a = scaled_dir.dot(scaled_dir);
+    let b = 2.0 * scaled_origin.dot(scaled_dir);
+    let c = scaled_origin.dot(scaled_origin) - radius * radius;
+    
+    let discriminant = b * b - 4.0 * a * c;
+    if discriminant < 0.0 {
+        return None;
+    }
+    
+    let sqrt_d = discriminant.sqrt();
+    let t1 = (-b - sqrt_d) / (2.0 * a);
+    let t2 = (-b + sqrt_d) / (2.0 * a);
+    
+    for t_scaled in [t1, t2] {
+        if t_scaled > 0.001 {
+            // Convert back to world space
+            let hit_scaled = scaled_origin + scaled_dir * t_scaled;
+            let hit_world = Vec3::new(
+                hit_scaled.x + dome_pos.x,
+                hit_scaled.y * height_ratio + dome_pos.y,
+                hit_scaled.z + dome_pos.z,
+            );
+            
+            // Check if above ground (dome is upper hemisphere)
+            if hit_world.y >= dome_pos.y {
+                let t_world = (hit_world - ray_origin).dot(ray_dir);
+                if t_world > 0.001 && t_world <= max_t {
+                    let normal = Vec3::new(
+                        hit_scaled.x,
+                        hit_scaled.y / height_ratio,
+                        hit_scaled.z,
+                    ).normalize();
+                    return Some((t_world, hit_world, normal));
+                }
+            }
+        }
+    }
+    
+    None
+}
+
+/// Ray-cylinder intersection
+fn ray_cylinder_intersection(
+    ray_origin: Vec3,
+    ray_dir: Vec3,
+    max_t: f32,
+    cyl_pos: Vec3,
+    radius: f32,
+    height: f32,
+) -> Option<(f32, Vec3, Vec3)> {
+    // Cylinder is at cyl_pos with base on ground
+    let local_origin = ray_origin - cyl_pos;
+    
+    // 2D circle intersection in XZ plane
+    let a = ray_dir.x * ray_dir.x + ray_dir.z * ray_dir.z;
+    let b = 2.0 * (local_origin.x * ray_dir.x + local_origin.z * ray_dir.z);
+    let c = local_origin.x * local_origin.x + local_origin.z * local_origin.z - radius * radius;
+    
+    let discriminant = b * b - 4.0 * a * c;
+    if discriminant < 0.0 || a.abs() < 1e-6 {
+        return None;
+    }
+    
+    let sqrt_d = discriminant.sqrt();
+    let t1 = (-b - sqrt_d) / (2.0 * a);
+    let t2 = (-b + sqrt_d) / (2.0 * a);
+    
+    for t in [t1, t2] {
+        if t > 0.001 && t <= max_t {
+            let hit_point = ray_origin + ray_dir * t;
+            let local_hit = hit_point - cyl_pos;
+            
+            // Check height bounds
+            if local_hit.y >= 0.0 && local_hit.y <= height {
+                let normal = Vec3::new(local_hit.x, 0.0, local_hit.z).normalize();
+                return Some((t, hit_point, normal));
+            }
+        }
+    }
+    
+    // Check top cap
+    if ray_dir.y.abs() > 1e-6 {
+        let t_top = (cyl_pos.y + height - ray_origin.y) / ray_dir.y;
+        if t_top > 0.001 && t_top <= max_t {
+            let hit_point = ray_origin + ray_dir * t_top;
+            let local_hit = hit_point - cyl_pos;
+            let dist_sq = local_hit.x * local_hit.x + local_hit.z * local_hit.z;
+            if dist_sq <= radius * radius {
+                return Some((t_top, hit_point, Vec3::Y));
+            }
+        }
+    }
+    
     None
 }
 

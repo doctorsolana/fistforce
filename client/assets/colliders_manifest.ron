@@ -1,0 +1,260 @@
+(
+  version: 1,
+  entries: [
+    // =========================================================================
+    // KayKit (Assetsfromassetpack) - collidable rocks + tree trunks
+    // Use XZ percentile filter to exclude small protrusions from collision
+    // =========================================================================
+    (
+      kind: "kaykit_rock_1_a",
+      gltf_path: "Assetsfromassetpack/gltf/Rock_1_A_Color1.gltf#Scene0",
+      mode: ConvexHull,
+      vertex_filter: XZRadiusPercentile(percentile: 0.90),
+      collidable: true,
+    ),
+    (
+      kind: "kaykit_rock_1_b",
+      gltf_path: "Assetsfromassetpack/gltf/Rock_1_B_Color1.gltf#Scene0",
+      mode: ConvexHull,
+      vertex_filter: XZRadiusPercentile(percentile: 0.90),
+      collidable: true,
+    ),
+    (
+      kind: "kaykit_rock_1_c",
+      gltf_path: "Assetsfromassetpack/gltf/Rock_1_C_Color1.gltf#Scene0",
+      mode: ConvexHull,
+      vertex_filter: XZRadiusPercentile(percentile: 0.90),
+      collidable: true,
+    ),
+    (
+      kind: "kaykit_rock_2_a",
+      gltf_path: "Assetsfromassetpack/gltf/Rock_2_A_Color1.gltf#Scene0",
+      mode: ConvexHull,
+      vertex_filter: XZRadiusPercentile(percentile: 0.90),
+      collidable: true,
+    ),
+    (
+      kind: "kaykit_rock_2_b",
+      gltf_path: "Assetsfromassetpack/gltf/Rock_2_B_Color1.gltf#Scene0",
+      mode: ConvexHull,
+      vertex_filter: XZRadiusPercentile(percentile: 0.90),
+      collidable: true,
+    ),
+    (
+      kind: "kaykit_rock_3_a",
+      gltf_path: "Assetsfromassetpack/gltf/Rock_3_A_Color1.gltf#Scene0",
+      mode: ConvexHull,
+      vertex_filter: XZRadiusPercentile(percentile: 0.90),
+      collidable: true,
+    ),
+    (
+      kind: "kaykit_rock_3_b",
+      gltf_path: "Assetsfromassetpack/gltf/Rock_3_B_Color1.gltf#Scene0",
+      mode: ConvexHull,
+      vertex_filter: XZRadiusPercentile(percentile: 0.90),
+      collidable: true,
+    ),
+    (
+      kind: "kaykit_rock_3_c",
+      gltf_path: "Assetsfromassetpack/gltf/Rock_3_C_Color1.gltf#Scene0",
+      mode: ConvexHull,
+      vertex_filter: XZRadiusPercentile(percentile: 0.90),
+      collidable: true,
+    ),
+
+    // Desert dead trees (trunk core: lower Y + XZ percentile)
+    (
+      kind: "kaykit_tree_bare_1_a",
+      gltf_path: "Assetsfromassetpack/gltf/Tree_Bare_1_A_Color1.gltf#Scene0",
+      mode: ConvexHull,
+      vertex_filter: TrunkCore(y_percent: 0.35, xz_percentile: 0.85),
+      collidable: true,
+    ),
+    (
+      kind: "kaykit_tree_bare_1_b",
+      gltf_path: "Assetsfromassetpack/gltf/Tree_Bare_1_B_Color1.gltf#Scene0",
+      mode: ConvexHull,
+      vertex_filter: TrunkCore(y_percent: 0.35, xz_percentile: 0.85),
+      collidable: true,
+    ),
+    (
+      kind: "kaykit_tree_bare_2_a",
+      gltf_path: "Assetsfromassetpack/gltf/Tree_Bare_2_A_Color1.gltf#Scene0",
+      mode: ConvexHull,
+      vertex_filter: TrunkCore(y_percent: 0.35, xz_percentile: 0.85),
+      collidable: true,
+    ),
+    (
+      kind: "kaykit_tree_bare_2_b",
+      gltf_path: "Assetsfromassetpack/gltf/Tree_Bare_2_B_Color1.gltf#Scene0",
+      mode: ConvexHull,
+      vertex_filter: TrunkCore(y_percent: 0.35, xz_percentile: 0.85),
+      collidable: true,
+    ),
+
+    // Grasslands trees (trunk core: lower Y + XZ percentile to exclude twigs)
+    (
+      kind: "kaykit_tree_1_a",
+      gltf_path: "Assetsfromassetpack/gltf/Tree_1_A_Color1.gltf#Scene0",
+      mode: ConvexHull,
+      vertex_filter: TrunkCore(y_percent: 0.35, xz_percentile: 0.85),
+      collidable: true,
+    ),
+    (
+      kind: "kaykit_tree_1_b",
+      gltf_path: "Assetsfromassetpack/gltf/Tree_1_B_Color1.gltf#Scene0",
+      mode: ConvexHull,
+      vertex_filter: TrunkCore(y_percent: 0.35, xz_percentile: 0.85),
+      collidable: true,
+    ),
+    (
+      kind: "kaykit_tree_2_a",
+      gltf_path: "Assetsfromassetpack/gltf/Tree_2_A_Color1.gltf#Scene0",
+      mode: ConvexHull,
+      vertex_filter: TrunkCore(y_percent: 0.35, xz_percentile: 0.85),
+      collidable: true,
+    ),
+    (
+      kind: "kaykit_tree_2_b",
+      gltf_path: "Assetsfromassetpack/gltf/Tree_2_B_Color1.gltf#Scene0",
+      mode: ConvexHull,
+      vertex_filter: TrunkCore(y_percent: 0.35, xz_percentile: 0.85),
+      collidable: true,
+    ),
+    (
+      kind: "kaykit_tree_3_a",
+      gltf_path: "Assetsfromassetpack/gltf/Tree_3_A_Color1.gltf#Scene0",
+      mode: ConvexHull,
+      vertex_filter: TrunkCore(y_percent: 0.35, xz_percentile: 0.85),
+      collidable: true,
+    ),
+    (
+      kind: "kaykit_tree_4_a",
+      gltf_path: "Assetsfromassetpack/gltf/Tree_4_A_Color1.gltf#Scene0",
+      mode: ConvexHull,
+      vertex_filter: TrunkCore(y_percent: 0.35, xz_percentile: 0.85),
+      collidable: true,
+    ),
+
+    // =========================================================================
+    // Stylized Nature - collidable tree trunks + medium rocks
+    // =========================================================================
+    (
+      kind: "nature_pine_1",
+      gltf_path: "StylizedNature/glTF/Pine_1.gltf#Scene0",
+      mode: ConvexHull,
+      vertex_filter: TrunkCore(y_percent: 0.35, xz_percentile: 0.85),
+      collidable: true,
+    ),
+    (
+      kind: "nature_pine_2",
+      gltf_path: "StylizedNature/glTF/Pine_2.gltf#Scene0",
+      mode: ConvexHull,
+      vertex_filter: TrunkCore(y_percent: 0.35, xz_percentile: 0.85),
+      collidable: true,
+    ),
+    (
+      kind: "nature_pine_3",
+      gltf_path: "StylizedNature/glTF/Pine_3.gltf#Scene0",
+      mode: ConvexHull,
+      vertex_filter: TrunkCore(y_percent: 0.35, xz_percentile: 0.85),
+      collidable: true,
+    ),
+    (
+      kind: "nature_pine_4",
+      gltf_path: "StylizedNature/glTF/Pine_4.gltf#Scene0",
+      mode: ConvexHull,
+      vertex_filter: TrunkCore(y_percent: 0.35, xz_percentile: 0.85),
+      collidable: true,
+    ),
+    (
+      kind: "nature_pine_5",
+      gltf_path: "StylizedNature/glTF/Pine_5.gltf#Scene0",
+      mode: ConvexHull,
+      vertex_filter: TrunkCore(y_percent: 0.35, xz_percentile: 0.85),
+      collidable: true,
+    ),
+
+    (
+      kind: "nature_twisted_tree_1",
+      gltf_path: "StylizedNature/glTF/TwistedTree_1.gltf#Scene0",
+      mode: ConvexHull,
+      vertex_filter: TrunkCore(y_percent: 0.35, xz_percentile: 0.85),
+      collidable: true,
+    ),
+    (
+      kind: "nature_twisted_tree_2",
+      gltf_path: "StylizedNature/glTF/TwistedTree_2.gltf#Scene0",
+      mode: ConvexHull,
+      vertex_filter: TrunkCore(y_percent: 0.35, xz_percentile: 0.85),
+      collidable: true,
+    ),
+    (
+      kind: "nature_twisted_tree_3",
+      gltf_path: "StylizedNature/glTF/TwistedTree_3.gltf#Scene0",
+      mode: ConvexHull,
+      vertex_filter: TrunkCore(y_percent: 0.35, xz_percentile: 0.85),
+      collidable: true,
+    ),
+    (
+      kind: "nature_twisted_tree_4",
+      gltf_path: "StylizedNature/glTF/TwistedTree_4.gltf#Scene0",
+      mode: ConvexHull,
+      vertex_filter: TrunkCore(y_percent: 0.35, xz_percentile: 0.85),
+      collidable: true,
+    ),
+    (
+      kind: "nature_twisted_tree_5",
+      gltf_path: "StylizedNature/glTF/TwistedTree_5.gltf#Scene0",
+      mode: ConvexHull,
+      vertex_filter: TrunkCore(y_percent: 0.35, xz_percentile: 0.85),
+      collidable: true,
+    ),
+
+    (
+      kind: "nature_common_tree_1",
+      gltf_path: "StylizedNature/glTF/CommonTree_1.gltf#Scene0",
+      mode: ConvexHull,
+      vertex_filter: TrunkCore(y_percent: 0.35, xz_percentile: 0.85),
+      collidable: true,
+    ),
+    (
+      kind: "nature_common_tree_2",
+      gltf_path: "StylizedNature/glTF/CommonTree_2.gltf#Scene0",
+      mode: ConvexHull,
+      vertex_filter: TrunkCore(y_percent: 0.35, xz_percentile: 0.85),
+      collidable: true,
+    ),
+    (
+      kind: "nature_common_tree_3",
+      gltf_path: "StylizedNature/glTF/CommonTree_3.gltf#Scene0",
+      mode: ConvexHull,
+      vertex_filter: TrunkCore(y_percent: 0.35, xz_percentile: 0.85),
+      collidable: true,
+    ),
+
+    // Medium rocks only (exclude pebbles from collision, use percentile to trim protrusions)
+    (
+      kind: "nature_rock_medium_1",
+      gltf_path: "StylizedNature/glTF/Rock_Medium_1.gltf#Scene0",
+      mode: ConvexHull,
+      vertex_filter: XZRadiusPercentile(percentile: 0.90),
+      collidable: true,
+    ),
+    (
+      kind: "nature_rock_medium_2",
+      gltf_path: "StylizedNature/glTF/Rock_Medium_2.gltf#Scene0",
+      mode: ConvexHull,
+      vertex_filter: XZRadiusPercentile(percentile: 0.90),
+      collidable: true,
+    ),
+    (
+      kind: "nature_rock_medium_3",
+      gltf_path: "StylizedNature/glTF/Rock_Medium_3.gltf#Scene0",
+      mode: ConvexHull,
+      vertex_filter: XZRadiusPercentile(percentile: 0.90),
+      collidable: true,
+    ),
+  ],
+)
+
