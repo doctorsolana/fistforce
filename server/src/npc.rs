@@ -59,7 +59,7 @@ pub fn spawn_npcs_once(
             Replicate::new(ReplicationMode::SingleServer(NetworkTarget::All)),
         ));
 
-        info!("Spawned NPC {} near spawn at {:?}", npc_id, pos);
+        trace!("Spawned NPC {} near spawn at {:?}", npc_id, pos);
     }
 }
 
@@ -145,7 +145,7 @@ pub fn tick_npc_ai(
                     wander.path.push(target);
                 }
 
-                info!(
+                trace!(
                     "NPC {} walking to {:?} (distance: {:.1}m, path {} waypoints)",
                     npc.id,
                     wander.target,
@@ -170,7 +170,7 @@ pub fn tick_npc_ai(
                 // Start idling
                 wander.idle_timer =
                     NPC_IDLE_TIME_MIN + wander.rng.next_f32() * (NPC_IDLE_TIME_MAX - NPC_IDLE_TIME_MIN);
-                info!("NPC {} reached destination, idling for {:.1}s", npc.id, wander.idle_timer);
+                trace!("NPC {} reached destination, idling for {:.1}s", npc.id, wander.idle_timer);
             }
             continue;
         }
