@@ -49,6 +49,13 @@ RUN apt-get update && apt-get install -y \
 # Copy the built binary
 COPY --from=builder /app/target/release/server /usr/local/bin/server
 
+# Copy colliders data (server needs this at runtime)
+RUN mkdir -p /usr/local/bin/client/assets
+COPY client/assets/colliders.bin /usr/local/bin/client/assets/colliders.bin
+
+# Set working directory so relative paths work
+WORKDIR /usr/local/bin
+
 # Expose UDP port for game traffic
 EXPOSE 5000/udp
 
