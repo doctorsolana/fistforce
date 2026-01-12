@@ -75,6 +75,54 @@ cargo run -p client --release
 
 ---
 
+## Build for macOS (MacBook)
+
+### Release build (fastest)
+
+```bash
+cargo build -p client --release
+```
+
+### Universal `.app` bundle (Intel + Apple Silicon)
+
+This produces a zip you can copy to another Mac and run by double-clicking:
+
+```bash
+# Build both architectures
+cargo build -p client --release --target aarch64-apple-darwin
+cargo build -p client --release --target x86_64-apple-darwin
+
+# Create a universal .app + zip (outputs dist/client-macos-universal.zip)
+rm -rf dist && mkdir -p dist/client.app/Contents/MacOS dist/client.app/Contents/Resources
+lipo -create -output dist/client.app/Contents/MacOS/client \
+  target/aarch64-apple-darwin/release/client \
+  target/x86_64-apple-darwin/release/client
+cp -R client/assets dist/client.app/Contents/MacOS/assets
+
+cat > dist/client.app/Contents/Info.plist <<'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleName</key><string>3DGame</string>
+  <key>CFBundleDisplayName</key><string>3DGame</string>
+  <key>CFBundleIdentifier</key><string>com.terninator.3dgame</string>
+  <key>CFBundleVersion</key><string>1.0.0</string>
+  <key>CFBundleShortVersionString</key><string>1.0.0</string>
+  <key>CFBundlePackageType</key><string>APPL</string>
+  <key>CFBundleExecutable</key><string>client</string>
+  <key>LSMinimumSystemVersion</key><string>11.0</string>
+  <key>NSHighResolutionCapable</key><true/>
+</dict>
+</plist>
+PLIST
+
+chmod +x dist/client.app/Contents/MacOS/client
+(cd dist && ditto -c -k --sequesterRsrc --keepParent client.app client-macos-universal.zip)
+```
+
+If macOS blocks the app on the other machine: right-click `client.app` → **Open** → **Open** (one-time).
+
 ## Collider Baker
 
 Environment props (trees, rocks) use **pre-baked convex-hull colliders** so the server doesn't need to load meshes at runtime.
