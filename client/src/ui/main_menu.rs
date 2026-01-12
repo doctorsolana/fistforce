@@ -146,11 +146,24 @@ struct DropdownOption {
 fn load_server_presets_sync() -> (ServerPresets, ServerAddress) {
     // In dev, assets live under `client/assets/`.
     // In packaged builds (e.g. macOS .app), assets are bundled as `assets/` next to the executable.
-    let candidates = ["assets/servers.ron", "client/assets/servers.ron"];
+    //
+    // IMPORTANT: when double-clicking an app bundle, the *current working directory* is not reliable,
+    // so we must resolve paths relative to the executable.
+    let mut candidates: Vec<std::path::PathBuf> = Vec::new();
 
-    let found: Option<(&str, String)> = candidates
+    if let Ok(exe_path) = std::env::current_exe() {
+        if let Some(exe_dir) = exe_path.parent() {
+            candidates.push(exe_dir.join("assets/servers.ron"));
+        }
+    }
+
+    // Fallbacks (dev / running from repo)
+    candidates.push(std::path::PathBuf::from("assets/servers.ron"));
+    candidates.push(std::path::PathBuf::from("client/assets/servers.ron"));
+
+    let found: Option<(std::path::PathBuf, String)> = candidates
         .iter()
-        .find_map(|p| std::fs::read_to_string(p).ok().map(|c| (*p, c)));
+        .find_map(|p| std::fs::read_to_string(p).ok().map(|c| (p.clone(), c)));
 
     let config: Option<ServerConfig> = found
         .as_ref()
@@ -160,7 +173,10 @@ fn load_server_presets_sync() -> (ServerPresets, ServerAddress) {
         info!(
             "Loaded {} server presets from {}",
             config.servers.len(),
-            found.as_ref().map(|(p, _)| *p).unwrap_or("<unknown>")
+            found
+                .as_ref()
+                .and_then(|(p, _)| p.to_str())
+                .unwrap_or("<unknown>")
         );
         
         // Set default server address from config
