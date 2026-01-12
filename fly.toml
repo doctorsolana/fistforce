@@ -1,7 +1,7 @@
 # Fly.io configuration for game server
 # See https://fly.io/docs/reference/configuration/
 
-app = "3dgamebevy"
+app = "fistforce"
 primary_region = "sjc"  # San Jose, CA - change to region closest to your players
 
 [build]
