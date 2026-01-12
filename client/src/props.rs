@@ -312,7 +312,7 @@ fn debug_draw_prop_colliders(
                 let v0 = pos + rot * (face.vertices[0] * s);
                 let v1 = pos + rot * (face.vertices[1] * s);
                 let v2 = pos + rot * (face.vertices[2] * s);
-                
+
                 gizmos.line(v0, v1, color);
                 gizmos.line(v1, v2, color);
                 gizmos.line(v2, v0, color);

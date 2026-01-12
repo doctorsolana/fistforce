@@ -162,7 +162,7 @@ pub fn detect_bullet_hits(
             &mut MessageSender<PlayerKilled>,
             &mut MessageSender<BulletImpact>,
         ),
-        With<ClientOf>,
+        (With<ClientOf>, With<Connected>),
     >,
 ) {
     // Collect hits first to avoid borrow issues
@@ -509,7 +509,7 @@ pub fn detect_bullet_world_hits(
     derived_colliders: Option<Res<DerivedColliderLibrary>>,
     static_colliders: Res<StaticColliders>,
     structure_colliders: Res<StructureColliders>,
-    mut client_links: Query<(&RemoteId, &mut MessageSender<BulletImpact>), With<ClientOf>>,
+    mut client_links: Query<(&RemoteId, &mut MessageSender<BulletImpact>), (With<ClientOf>, With<Connected>)>,
 ) {
     // Wall is 50m north of spawn, facing south
     const WALL_X: f32 = 0.0;

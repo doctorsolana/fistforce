@@ -100,9 +100,9 @@ pub fn handle_disconnections(
     mut vehicles: Query<&mut VehicleDriver>,
     mut inputs: ResMut<ClientInputs>,
 ) {
-    for (entity, remote_id) in disconnected_clients.iter() {
+    for (client_link_entity, remote_id) in disconnected_clients.iter() {
         // Skip if this isn't a client link
-        if client_filter.get(entity).is_err() {
+        if client_filter.get(client_link_entity).is_err() {
             continue;
         }
         
@@ -125,6 +125,11 @@ pub fn handle_disconnections(
         }
 
         inputs.latest.remove(&peer_id);
+        
+        // IMPORTANT: Despawn the client link entity itself to stop replication errors
+        // This prevents "ClientOf X not found or does not have ReplicationSender" spam
+        commands.entity(client_link_entity).despawn();
+        info!("Cleaned up client link entity for {:?}", peer_id);
     }
 }
 

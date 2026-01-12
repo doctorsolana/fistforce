@@ -20,6 +20,13 @@ use shared::{
 /// Collisions are only needed near players/NPCs/vehicles.
 const COLLIDER_VIEW_DISTANCE_CHUNKS: i32 = 3;
 
+/// Limit how many chunks we load per fixed tick.
+///
+/// Without this, a newly joined player (especially if other players are far away) can cause
+/// a large number of collider chunks to be generated and indexed in a single tick, which can
+/// stall the server and trigger client netcode timeouts ("stuck until reconnect").
+const MAX_COLLIDER_CHUNKS_TO_LOAD_PER_TICK: usize = 6;
+
 /// Spatial hash cell size in meters.
 const COLLIDER_CELL_SIZE: f32 = 16.0;
 
@@ -34,7 +41,7 @@ pub struct BakedColliderLibrary {
 }
 
 /// Derived collision info from the baked hull points.
-/// 
+///
 /// Uses actual 3D convex hull for accurate collision.
 #[derive(Resource)]
 pub struct DerivedColliderLibrary {
@@ -146,9 +153,11 @@ pub fn stream_static_colliders(
 
     // Compute desired chunks (union around all players).
     let mut desired: HashSet<ChunkCoord> = HashSet::new();
+    let mut player_centers: Vec<ChunkCoord> = Vec::new();
     for pos in players.iter() {
         let center = ChunkCoord::from_world_pos(pos.0);
         desired.extend(center.chunks_in_radius(COLLIDER_VIEW_DISTANCE_CHUNKS));
+        player_centers.push(center);
     }
 
     // Unload chunks that are no longer desired.
@@ -162,11 +171,22 @@ pub fn stream_static_colliders(
     }
 
     // Load new chunks.
-    let to_load: Vec<ChunkCoord> = desired
+    let mut to_load: Vec<ChunkCoord> = desired
         .difference(&colliders.loaded_chunks)
         .copied()
         .collect();
-    for chunk in to_load {
+
+    // Sort by nearest player chunk (Chebyshev distance) so we load what matters first.
+    // This also stabilizes perf spikes on joins.
+    to_load.sort_by_key(|c| {
+        player_centers
+            .iter()
+            .map(|p| (c.x - p.x).abs().max((c.z - p.z).abs()))
+            .min()
+            .unwrap_or(i32::MAX)
+    });
+
+    for chunk in to_load.into_iter().take(MAX_COLLIDER_CHUNKS_TO_LOAD_PER_TICK) {
         load_chunk(&terrain, &library, &mut colliders, chunk);
     }
 }
@@ -179,9 +199,11 @@ pub fn stream_structure_colliders(
 ) {
     // Compute desired chunks (union around all players).
     let mut desired: HashSet<ChunkCoord> = HashSet::new();
+    let mut player_centers: Vec<ChunkCoord> = Vec::new();
     for pos in players.iter() {
         let center = ChunkCoord::from_world_pos(pos.0);
         desired.extend(center.chunks_in_radius(COLLIDER_VIEW_DISTANCE_CHUNKS));
+        player_centers.push(center);
     }
 
     // Unload chunks that are no longer desired.
@@ -195,11 +217,20 @@ pub fn stream_structure_colliders(
     }
 
     // Load new chunks.
-    let to_load: Vec<ChunkCoord> = desired
+    let mut to_load: Vec<ChunkCoord> = desired
         .difference(&colliders.loaded_chunks)
         .copied()
         .collect();
-    for chunk in to_load {
+
+    to_load.sort_by_key(|c| {
+        player_centers
+            .iter()
+            .map(|p| (c.x - p.x).abs().max((c.z - p.z).abs()))
+            .min()
+            .unwrap_or(i32::MAX)
+    });
+
+    for chunk in to_load.into_iter().take(MAX_COLLIDER_CHUNKS_TO_LOAD_PER_TICK) {
         load_structure_chunk(&terrain, &mut colliders, chunk);
     }
 }
@@ -687,7 +718,7 @@ fn resolve_capsule_vs_static(
     height: f32,
     _step_up_height: f32, // Reserved for future use
 ) {
-    let half_h = height * 0.5;
+            let half_h = height * 0.5;
     
     // Iterative push-out to handle multiple overlaps.
     for _ in 0..4 {
@@ -748,13 +779,13 @@ fn resolve_capsule_vs_static(
                 pos.x += push.x;
                 pos.y += push.y;
                 pos.z += push.z;
-                
+
                 if let Some(v) = velocity.as_deref_mut() {
                     // Project velocity onto the surface (slide along it)
                     let vn = v.dot(best_normal);
                     if vn < 0.0 {
                         *v -= best_normal * vn;
-                    }
+                }
                 }
             } else {
                 // Steep surface - push out along normal but preserve some vertical
@@ -762,16 +793,16 @@ fn resolve_capsule_vs_static(
                 pos.x += push.x;
                 pos.y += push.y.max(0.0); // Don't push down
                 pos.z += push.z;
-                
+
                 if let Some(v) = velocity.as_deref_mut() {
                     let vn = v.dot(best_normal);
                     if vn < 0.0 {
                         *v -= best_normal * vn;
                     }
+                    }
                 }
-            }
-            
-            moved = true;
+
+                moved = true;
         }
 
         if !moved {
