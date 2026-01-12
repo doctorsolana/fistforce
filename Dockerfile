@@ -3,10 +3,14 @@ FROM rust:1.92-slim-bookworm AS builder
 
 WORKDIR /app
 
-# Install build dependencies
+# Install build dependencies (including Wayland, X11, audio libs for Bevy)
 RUN apt-get update && apt-get install -y \
     pkg-config \
     libssl-dev \
+    libwayland-dev \
+    libxkbcommon-dev \
+    libasound2-dev \
+    libudev-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy workspace files
