@@ -191,6 +191,16 @@ pub fn handle_shoot_input(
         return;
     }
     
+    // Don't shoot while dead
+    if input_state.is_dead {
+        return;
+    }
+    
+    // Don't shoot while inventory is open
+    if input_state.inventory_open {
+        return;
+    }
+    
     // Don't shoot while in vehicle
     if input_state.in_vehicle {
         return;
@@ -344,12 +354,17 @@ pub fn recover_recoil(
 pub fn handle_reload_input(
     keyboard: Res<ButtonInput<KeyCode>>,
     mut client_query: Query<&mut MessageSender<ReloadRequest>, (With<crate::GameClient>, With<Connected>)>,
-    local_player: Query<&EquippedWeapon, With<LocalPlayer>>,
+    local_player: Query<(&EquippedWeapon, &shared::Inventory), With<LocalPlayer>>,
     input_state: Res<InputState>,
     mut reload_state: ResMut<ReloadState>,
 ) {
     // Reset flag each frame
     reload_state.reload_requested_this_frame = false;
+    
+    // Don't reload while dead
+    if input_state.is_dead {
+        return;
+    }
     
     // Don't reload in vehicle
     if input_state.in_vehicle {
@@ -357,10 +372,11 @@ pub fn handle_reload_input(
     }
     
     if keyboard.just_pressed(KeyCode::KeyR) {
-        if let Ok(weapon) = local_player.single() {
-            // Only send reload request if we actually need ammo and have reserve
+        if let Ok((weapon, inventory)) = local_player.single() {
+            // Only send reload request if we actually need ammo and have reserve in inventory
             let stats = weapon.weapon_type.stats();
-            if weapon.ammo_in_mag < stats.magazine_size && weapon.reserve_ammo > 0 {
+            let reserve_in_inventory = inventory.count_item(weapon.weapon_type.ammo_type());
+            if weapon.ammo_in_mag < stats.magazine_size && reserve_in_inventory > 0 {
                 if let Ok(mut sender) = client_query.single_mut() {
                     let _ = sender.send::<ReliableChannel>(ReloadRequest);
                 }

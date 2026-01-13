@@ -6,7 +6,7 @@
 use bevy::prelude::*;
 use lightyear::prelude::*;
 use shared::{
-    weapons::WeaponType, EquippedWeapon, LocalPlayer, SwitchWeapon, ReliableChannel,
+    weapons::WeaponType, EquippedWeapon, LocalPlayer, SelectHotbarSlot, HotbarSelection, ReliableChannel,
 };
 
 use crate::input::{CameraMode, InputState};
@@ -14,6 +14,16 @@ use crate::input::{CameraMode, InputState};
 /// Marker for the first-person weapon model
 #[derive(Component)]
 pub struct FirstPersonWeapon;
+
+/// Marker for the third-person weapon model (attached to player)
+#[derive(Component)]
+pub struct ThirdPersonWeapon;
+
+/// Track which weapon the third-person model is showing
+#[derive(Resource, Default)]
+pub struct CurrentThirdPersonWeapon {
+    pub weapon_type: Option<WeaponType>,
+}
 
 /// Marker for weapon HUD root
 #[derive(Component)]
@@ -27,6 +37,10 @@ pub struct AmmoText;
 #[derive(Component)]
 pub struct WeaponNameText;
 
+/// Marker for hotbar slots display
+#[derive(Component)]
+pub struct HotbarSlotsText;
+
 /// Resource tracking which weapon model is currently shown
 #[derive(Resource, Default)]
 pub struct CurrentWeaponView {
@@ -36,8 +50,8 @@ pub struct CurrentWeaponView {
 /// Handle weapon switching with number keys
 pub fn handle_weapon_switch(
     keyboard: Res<ButtonInput<KeyCode>>,
-    mut client_query: Query<&mut MessageSender<SwitchWeapon>, (With<crate::GameClient>, With<Connected>)>,
-    local_player: Query<&EquippedWeapon, With<LocalPlayer>>,
+    mut client_query: Query<&mut MessageSender<SelectHotbarSlot>, (With<crate::GameClient>, With<Connected>)>,
+    mut local_hotbar: Query<&mut HotbarSelection, With<LocalPlayer>>,
     input_state: Res<InputState>,
 ) {
     // Don't switch weapons while in vehicle
@@ -45,32 +59,31 @@ pub fn handle_weapon_switch(
         return;
     }
     
-    let current_weapon = local_player.iter().next().map(|w| w.weapon_type);
-    
-    let new_weapon = if keyboard.just_pressed(KeyCode::Digit1) {
-        Some(WeaponType::Pistol)
+    let new_index: Option<u8> = if keyboard.just_pressed(KeyCode::Digit1) {
+        Some(0)
     } else if keyboard.just_pressed(KeyCode::Digit2) {
-        Some(WeaponType::AssaultRifle)
+        Some(1)
     } else if keyboard.just_pressed(KeyCode::Digit3) {
-        Some(WeaponType::SMG)
+        Some(2)
     } else if keyboard.just_pressed(KeyCode::Digit4) {
-        Some(WeaponType::Shotgun)
+        Some(3)
     } else if keyboard.just_pressed(KeyCode::Digit5) {
-        Some(WeaponType::Sniper)
+        Some(4)
+    } else if keyboard.just_pressed(KeyCode::Digit6) {
+        Some(5)
     } else {
         None
     };
     
-    if let Some(weapon) = new_weapon {
-        // Only switch if different from current
-        if current_weapon != Some(weapon) {
-            if let Ok(mut sender) = client_query.single_mut() {
-                let _ = sender.send::<ReliableChannel>(SwitchWeapon {
-                    weapon_type: weapon,
-                });
-                info!("Switching to {:?}", weapon);
-            }
-        }
+    let Some(index) = new_index else { return };
+    
+    // Optimistic local update (UI highlight feels instant)
+    if let Ok(mut hotbar) = local_hotbar.single_mut() {
+        hotbar.index = index;
+    }
+    
+    if let Ok(mut sender) = client_query.single_mut() {
+        let _ = sender.send::<ReliableChannel>(SelectHotbarSlot { index });
     }
 }
 
@@ -113,9 +126,10 @@ pub fn spawn_weapon_hud(mut commands: Commands) {
                 TextColor(Color::srgba(1.0, 0.9, 0.6, 1.0)),
             ));
             
-            // Weapon slots hint
+            // Hotbar slots display (dynamically updated)
             parent.spawn((
-                Text::new("[1] Pistol  [2] AR  [3] SMG  [4] Shotgun  [5] Sniper"),
+                HotbarSlotsText,
+                Text::new("[1] -  [2] -  [3] -  [4] -  [5] -  [6] -"),
                 TextFont {
                     font_size: 12.0,
                     ..default()
@@ -144,9 +158,10 @@ pub fn despawn_weapon_hud(
 
 /// Update HUD to show current weapon and ammo
 pub fn update_weapon_hud(
-    local_player: Query<&EquippedWeapon, With<LocalPlayer>>,
-    mut weapon_text: Query<&mut Text, (With<WeaponNameText>, Without<AmmoText>)>,
-    mut ammo_text: Query<&mut Text, (With<AmmoText>, Without<WeaponNameText>)>,
+    local_player: Query<(&EquippedWeapon, &shared::Inventory, &HotbarSelection), With<LocalPlayer>>,
+    mut weapon_text: Query<&mut Text, (With<WeaponNameText>, Without<AmmoText>, Without<HotbarSlotsText>)>,
+    mut ammo_text: Query<&mut Text, (With<AmmoText>, Without<WeaponNameText>, Without<HotbarSlotsText>)>,
+    mut hotbar_text: Query<&mut Text, (With<HotbarSlotsText>, Without<WeaponNameText>, Without<AmmoText>)>,
     mut hud_visibility: Query<&mut Visibility, With<WeaponHUD>>,
     input_state: Res<InputState>,
 ) {
@@ -159,7 +174,7 @@ pub fn update_weapon_hud(
         };
     }
     
-    let Some(weapon) = local_player.iter().next() else {
+    let Some((weapon, inventory, hotbar_selection)) = local_player.iter().next() else {
         return;
     };
     
@@ -168,9 +183,36 @@ pub fn update_weapon_hud(
         **text = weapon_name(weapon.weapon_type);
     }
     
-    // Update ammo
+    // Update hotbar slots display
+    for mut text in hotbar_text.iter_mut() {
+        let mut slots = Vec::new();
+        for i in 0..shared::HOTBAR_SLOTS {
+            let slot_name = if let Some(stack) = inventory.get_slot(i) {
+                hotbar_item_name(&stack.item_type)
+            } else {
+                "-".to_string()
+            };
+            // Highlight active slot
+            if i == hotbar_selection.index as usize {
+                slots.push(format!(">[{}] {}<", i + 1, slot_name));
+            } else {
+                slots.push(format!("[{}] {}", i + 1, slot_name));
+            }
+        }
+        **text = slots.join("  ");
+    }
+    
+    // Update ammo - reserve comes from inventory (no ammo display when Unarmed)
+    if weapon.weapon_type == WeaponType::Unarmed {
+        for mut text in ammo_text.iter_mut() {
+            **text = String::new();
+        }
+        return;
+    }
+    
+    let reserve_ammo = inventory.count_item(weapon.weapon_type.ammo_type());
     for mut text in ammo_text.iter_mut() {
-        **text = format!("{} / {}", weapon.ammo_in_mag, weapon.reserve_ammo);
+        **text = format!("{} / {}", weapon.ammo_in_mag, reserve_ammo);
     }
 }
 
@@ -182,6 +224,28 @@ fn weapon_name(weapon: WeaponType) -> String {
         WeaponType::Sniper => "Sniper Rifle".to_string(),
         WeaponType::Shotgun => "Shotgun".to_string(),
         WeaponType::SMG => "SMG".to_string(),
+        WeaponType::Unarmed => "Unarmed".to_string(),
+    }
+}
+
+/// Get short display name for hotbar items
+fn hotbar_item_name(item_type: &shared::ItemType) -> String {
+    use shared::ItemType;
+    match item_type {
+        ItemType::Weapon(w) => match w {
+            WeaponType::Pistol => "Pistol".to_string(),
+            WeaponType::AssaultRifle => "AR".to_string(),
+            WeaponType::Sniper => "Sniper".to_string(),
+            WeaponType::Shotgun => "Shotgun".to_string(),
+            WeaponType::SMG => "SMG".to_string(),
+            WeaponType::Unarmed => "-".to_string(),
+        },
+        ItemType::PistolAmmo => "9mm".to_string(),
+        ItemType::RifleAmmo => "5.56".to_string(),
+        ItemType::ShotgunShells => "Shells".to_string(),
+        ItemType::SniperRounds => ".308".to_string(),
+        ItemType::Wood => "Wood".to_string(),
+        ItemType::Stone => "Stone".to_string(),
     }
 }
 
@@ -205,7 +269,9 @@ pub fn update_first_person_weapon(
     };
     
     // Hide weapon in third-person or vehicle
-    let should_show = input_state.camera_mode == CameraMode::FirstPerson && !input_state.in_vehicle;
+    let should_show = input_state.camera_mode == CameraMode::FirstPerson
+        && !input_state.in_vehicle
+        && weapon.weapon_type != WeaponType::Unarmed;
     
     // Check if we need to change the model
     let needs_update = current_view.weapon_type != Some(weapon.weapon_type);
@@ -514,6 +580,10 @@ fn spawn_weapon_model(
                 ));
             });
         }
+        
+        WeaponType::Unarmed => {
+            // No model
+        }
     }
     
     // Make weapon a child of camera so it follows view
@@ -544,4 +614,202 @@ pub fn animate_weapon(
         
         transform.translation = offset;
     }
+}
+
+// =============================================================================
+// THIRD-PERSON WEAPON
+// =============================================================================
+
+/// Update third-person weapon model (visible on character in third-person view)
+pub fn update_third_person_weapon(
+    mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    local_player: Query<(Entity, &EquippedWeapon), With<LocalPlayer>>,
+    existing_weapon: Query<Entity, With<ThirdPersonWeapon>>,
+    mut current_tp_weapon: ResMut<CurrentThirdPersonWeapon>,
+    input_state: Res<InputState>,
+) {
+    let Some((player_entity, weapon)) = local_player.iter().next() else {
+        return;
+    };
+    
+    // Only show in third-person and not in vehicle
+    let should_show = input_state.camera_mode == CameraMode::ThirdPerson
+        && !input_state.in_vehicle
+        && weapon.weapon_type != WeaponType::Unarmed;
+    
+    // Check if we need to spawn (not already showing this weapon)
+    let already_showing = current_tp_weapon.weapon_type == Some(weapon.weapon_type);
+    
+    // Despawn old weapon if switching weapons or hiding
+    if !should_show || (should_show && !already_showing) {
+        for entity in existing_weapon.iter() {
+            commands.entity(entity).despawn();
+        }
+        current_tp_weapon.weapon_type = None;
+    }
+    
+    if !should_show {
+        return;
+    }
+    
+    // Spawn new weapon model if not already showing
+    if current_tp_weapon.weapon_type.is_none() {
+        info!("Spawning third-person weapon: {:?}", weapon.weapon_type);
+        spawn_third_person_weapon(
+            &mut commands,
+            &mut meshes,
+            &mut materials,
+            weapon.weapon_type,
+            player_entity,
+        );
+        current_tp_weapon.weapon_type = Some(weapon.weapon_type);
+    }
+}
+
+/// Spawn a simplified third-person weapon model attached to the player
+fn spawn_third_person_weapon(
+    commands: &mut Commands,
+    meshes: &mut ResMut<Assets<Mesh>>,
+    materials: &mut ResMut<Assets<StandardMaterial>>,
+    weapon_type: WeaponType,
+    player_entity: Entity,
+) {
+    // Weapon materials (same as first-person but we can adjust)
+    let metal_material = materials.add(StandardMaterial {
+        base_color: Color::srgb(0.15, 0.15, 0.18),
+        metallic: 0.9,
+        perceptual_roughness: 0.3,
+        ..default()
+    });
+    
+    let grip_material = materials.add(StandardMaterial {
+        base_color: Color::srgb(0.08, 0.06, 0.04),
+        metallic: 0.1,
+        perceptual_roughness: 0.8,
+        ..default()
+    });
+
+    // Position relative to player - roughly where hands would hold a weapon
+    // Offset: slightly forward, to the right, and at chest height
+    let base_offset = Vec3::new(0.2, 0.15, -0.35);
+    
+    let weapon_entity = commands.spawn((
+        ThirdPersonWeapon,
+        Transform::from_translation(base_offset)
+            .with_rotation(Quat::from_rotation_y(-0.1)), // Slight angle
+        GlobalTransform::default(),
+        Visibility::Inherited,
+        InheritedVisibility::default(),
+    )).id();
+    
+    // Build simplified weapon models (less detail than first-person)
+    let scale = 0.8; // Slightly smaller for third person
+    
+    match weapon_type {
+        WeaponType::Pistol => {
+            let body = meshes.add(Cuboid::new(0.04 * scale, 0.08 * scale, 0.12 * scale));
+            let barrel = meshes.add(Cylinder::new(0.012 * scale, 0.08 * scale));
+            
+            commands.entity(weapon_entity).with_children(|parent| {
+                parent.spawn((
+                    Mesh3d(body),
+                    MeshMaterial3d(metal_material.clone()),
+                    Transform::default(),
+                ));
+                parent.spawn((
+                    Mesh3d(barrel),
+                    MeshMaterial3d(metal_material.clone()),
+                    Transform::from_translation(Vec3::new(0.0, 0.02 * scale, -0.1 * scale))
+                        .with_rotation(Quat::from_rotation_x(std::f32::consts::FRAC_PI_2)),
+                ));
+            });
+        }
+        WeaponType::AssaultRifle | WeaponType::SMG => {
+            let body = meshes.add(Cuboid::new(0.04 * scale, 0.06 * scale, 0.35 * scale));
+            let barrel = meshes.add(Cylinder::new(0.012 * scale, 0.15 * scale));
+            let mag = meshes.add(Cuboid::new(0.025 * scale, 0.08 * scale, 0.04 * scale));
+            
+            commands.entity(weapon_entity).with_children(|parent| {
+                parent.spawn((
+                    Mesh3d(body),
+                    MeshMaterial3d(metal_material.clone()),
+                    Transform::default(),
+                ));
+                parent.spawn((
+                    Mesh3d(barrel),
+                    MeshMaterial3d(metal_material.clone()),
+                    Transform::from_translation(Vec3::new(0.0, 0.0, -0.25 * scale))
+                        .with_rotation(Quat::from_rotation_x(std::f32::consts::FRAC_PI_2)),
+                ));
+                parent.spawn((
+                    Mesh3d(mag),
+                    MeshMaterial3d(grip_material.clone()),
+                    Transform::from_translation(Vec3::new(0.0, -0.06 * scale, 0.05 * scale)),
+                ));
+            });
+        }
+        WeaponType::Shotgun => {
+            let body = meshes.add(Cuboid::new(0.045 * scale, 0.06 * scale, 0.4 * scale));
+            let barrel = meshes.add(Cylinder::new(0.018 * scale, 0.25 * scale));
+            
+            commands.entity(weapon_entity).with_children(|parent| {
+                parent.spawn((
+                    Mesh3d(body),
+                    MeshMaterial3d(metal_material.clone()),
+                    Transform::default(),
+                ));
+                parent.spawn((
+                    Mesh3d(barrel),
+                    MeshMaterial3d(metal_material.clone()),
+                    Transform::from_translation(Vec3::new(0.0, 0.01 * scale, -0.3 * scale))
+                        .with_rotation(Quat::from_rotation_x(std::f32::consts::FRAC_PI_2)),
+                ));
+            });
+        }
+        WeaponType::Sniper => {
+            let body = meshes.add(Cuboid::new(0.04 * scale, 0.06 * scale, 0.5 * scale));
+            let barrel = meshes.add(Cylinder::new(0.015 * scale, 0.3 * scale));
+            let scope = meshes.add(Cylinder::new(0.02 * scale, 0.12 * scale));
+            
+            commands.entity(weapon_entity).with_children(|parent| {
+                parent.spawn((
+                    Mesh3d(body),
+                    MeshMaterial3d(metal_material.clone()),
+                    Transform::default(),
+                ));
+                parent.spawn((
+                    Mesh3d(barrel),
+                    MeshMaterial3d(metal_material.clone()),
+                    Transform::from_translation(Vec3::new(0.0, 0.0, -0.4 * scale))
+                        .with_rotation(Quat::from_rotation_x(std::f32::consts::FRAC_PI_2)),
+                ));
+                parent.spawn((
+                    Mesh3d(scope),
+                    MeshMaterial3d(grip_material.clone()),
+                    Transform::from_translation(Vec3::new(0.0, 0.05 * scale, -0.05 * scale))
+                        .with_rotation(Quat::from_rotation_x(std::f32::consts::FRAC_PI_2)),
+                ));
+            });
+        }
+        WeaponType::Unarmed => {
+            // No model
+        }
+    }
+    
+    // Make weapon a child of the player so it follows them
+    commands.entity(player_entity).add_child(weapon_entity);
+}
+
+/// Despawn third-person weapon when leaving gameplay
+pub fn despawn_third_person_weapon(
+    mut commands: Commands,
+    weapons: Query<Entity, With<ThirdPersonWeapon>>,
+    mut current_tp_weapon: ResMut<CurrentThirdPersonWeapon>,
+) {
+    for entity in weapons.iter() {
+        commands.entity(entity).despawn();
+    }
+    current_tp_weapon.weapon_type = None;
 }

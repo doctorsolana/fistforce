@@ -3,6 +3,7 @@
 //! Atmosphere, day/night cycle, and camera setup.
 
 use bevy::prelude::*;
+use bevy::audio::SpatialListener;
 use bevy::camera::Exposure;
 use bevy::core_pipeline::tonemapping::Tonemapping;
 use bevy::light::{light_consts::lux, AtmosphereEnvironmentMapLight, DirectionalLightShadowMap};
@@ -124,6 +125,9 @@ pub fn setup_rendering(mut commands: Commands) {
         GlobalTransform::default(),
         Visibility::default(),
         InheritedVisibility::default(),
+        // Audio listener for spatial audio (other players' sounds)
+        // SpatialListener defines where the "ears" are relative to the entity
+        SpatialListener::new(0.1), // ~10cm between ears
     ));
 
     info!("Client rendering initialized with desert atmosphere");

@@ -7,6 +7,7 @@ mod npc;
 mod weapons;
 mod world;
 mod colliders;
+mod inventory;
 
 use bevy::prelude::*;
 use bevy::app::ScheduleRunnerPlugin;
@@ -136,6 +137,9 @@ fn main() {
 
     // Server-side input cache
     app.init_resource::<ClientInputs>();
+    
+    // Chest open tracking
+    app.init_resource::<inventory::OpenChests>();
 
     // Lightyear server plugins (tick_duration = 60Hz)
     app.add_plugins(ServerPlugins {
@@ -158,6 +162,8 @@ fn main() {
     app.add_systems(Update, spawn_vehicles_once);
     // Spawn NPCs after server is started
     app.add_systems(Update, npc::spawn_npcs_once);
+    // Spawn test items after server is started
+    app.add_systems(Update, inventory::spawn_test_items.run_if(server_is_started));
 
     // Fixed tick: receive inputs, handle interactions, then simulate everyone.
     // Split into multiple system groups to avoid tuple limit
@@ -193,14 +199,35 @@ fn main() {
             colliders::resolve_vehicle_static_collisions,
             colliders::resolve_player_static_collisions,
             colliders::resolve_npc_static_collisions,
+            // Inventory / hotbar (server-authoritative)
+            inventory::handle_hotbar_selection_requests,
+            inventory::handle_inventory_move_requests,
+            inventory::handle_pickup_requests,
+            inventory::handle_drop_requests,
+            inventory::sync_equipped_weapon_from_hotbar,
+            // Chest / storage (server-authoritative)
+            inventory::handle_open_chest_requests,
+            inventory::handle_close_chest_requests,
+            inventory::handle_chest_transfer_requests,
+            inventory::auto_close_distant_chests,
+        )
+            .chain()
+            .run_if(server_is_started),
+    );
+    
+    app.add_systems(
+        FixedUpdate,
+        (
             // Weapon systems
             weapons::handle_shoot_requests,
-            weapons::handle_weapon_switch,
             weapons::handle_reload_request,
             weapons::simulate_bullets,
             weapons::detect_bullet_hits,
             weapons::detect_bullet_world_hits,
             weapons::cleanup_bullets,
+            // Inventory death/respawn
+            inventory::drop_inventory_on_death,
+            inventory::restore_inventory_on_respawn,
         )
             .chain()
             .run_if(server_is_started),

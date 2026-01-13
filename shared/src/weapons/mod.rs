@@ -6,6 +6,7 @@ pub mod ballistics;
 pub mod damage;
 
 use serde::{Deserialize, Serialize};
+use crate::items::ItemType;
 
 /// Available weapon types
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default, Serialize, Deserialize)]
@@ -16,6 +17,8 @@ pub enum WeaponType {
     Sniper,
     Shotgun,
     SMG,
+    /// No weapon equipped
+    Unarmed,
 }
 
 /// Complete stats for a weapon type
@@ -135,12 +138,48 @@ impl WeaponType {
                 headshot_mult: 1.8,
                 pellet_count: 1,
             },
+            WeaponType::Unarmed => WeaponStats {
+                damage: 0.0,
+                fire_rate: 0.0,
+                bullet_speed: 0.0,
+                magazine_size: 0,
+                reload_time: 0.0,
+                spread_hip: 0.0,
+                spread_ads: 0.0,
+                recoil_vertical: 0.0,
+                recoil_horizontal: 0.0,
+                damage_falloff_start: 0.0,
+                damage_falloff_end: 0.0,
+                min_damage_mult: 0.0,
+                headshot_mult: 0.0,
+                pellet_count: 1,
+            },
         }
     }
     
     /// Get the fire cooldown in seconds
     pub fn fire_cooldown(&self) -> f32 {
         1.0 / self.stats().fire_rate
+    }
+    
+    /// Get the ammo ItemType for this weapon
+    pub fn ammo_type(&self) -> ItemType {
+        match self {
+            WeaponType::Pistol => ItemType::PistolAmmo,
+            WeaponType::AssaultRifle => ItemType::RifleAmmo,
+            WeaponType::Sniper => ItemType::SniperRounds,
+            WeaponType::Shotgun => ItemType::ShotgunShells,
+            WeaponType::SMG => ItemType::PistolAmmo, // SMG uses pistol ammo
+            WeaponType::Unarmed => ItemType::RifleAmmo, // unused; callers should special-case Unarmed
+        }
+    }
+    
+    /// Convert this weapon into an inventory item (None for Unarmed)
+    pub fn as_item_type(&self) -> Option<ItemType> {
+        match self {
+            WeaponType::Unarmed => None,
+            other => Some(ItemType::Weapon(*other)),
+        }
     }
 }
 

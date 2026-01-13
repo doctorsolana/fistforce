@@ -4,14 +4,21 @@
 //! Updated for Bevy 0.17
 
 use bevy::prelude::*;
-use bevy::audio::Volume;
+use bevy::audio::{SpatialAudioSink, Volume};
 
-use shared::{terrain::Biome, LocalPlayer, PlayerPosition, WorldTerrain, VehicleState, VehicleDriver, Vehicle};
+use shared::{
+    terrain::Biome, LocalPlayer, Npc, Player, PlayerPosition, WorldTerrain, Vehicle, VehicleDriver,
+    VehicleState,
+};
+use shared::{AudioEvent, AudioEventKind};
 use lightyear::prelude::*;
 
+use crate::camera::peer_id_to_u64;
 use crate::input::InputState;
 use crate::states::GameState;
 use crate::weapons::ShootingState;
+
+use std::collections::HashSet;
 
 /// Resource holding all loaded audio assets
 #[derive(Resource)]
@@ -58,6 +65,49 @@ pub struct AudioState {
     pub ambient_spawned: bool,
     pub assets_ready: bool,
 }
+
+/// Marker for remote player spatial audio (gunshots, etc.)
+#[derive(Component)]
+pub struct RemoteSpatialSound;
+
+// =============================================================================
+// REMOTE FOOTSTEPS (PLAYERS + NPCS)
+// =============================================================================
+
+/// Spatial audio loop attached to a remote entity to represent footsteps.
+#[derive(Component, Clone, Copy, Debug)]
+pub struct RemoteFootstepEmitter {
+    pub target: Entity,
+}
+
+#[derive(Component, Clone, Copy, Debug)]
+pub struct RemoteFootstepState {
+    pub last_pos: Vec3,
+    pub playing: bool,
+}
+
+const REMOTE_FOOTSTEP_MAX_SPAWN_DISTANCE: f32 = 90.0;
+const REMOTE_FOOTSTEP_DESPAWN_DISTANCE: f32 = 130.0;
+const REMOTE_FOOTSTEP_START_SPEED: f32 = 0.6;
+const REMOTE_FOOTSTEP_STOP_SPEED: f32 = 0.25;
+const REMOTE_FOOTSTEP_VOLUME: f32 = 0.22;
+
+// =============================================================================
+// REMOTE VEHICLE AUDIO
+// =============================================================================
+
+#[derive(Component, Clone, Copy, Debug)]
+pub struct RemoteVehicleIdleSound {
+    pub vehicle: Entity,
+}
+
+#[derive(Component, Clone, Copy, Debug)]
+pub struct RemoteVehicleCruiseSound {
+    pub vehicle: Entity,
+}
+
+const REMOTE_VEHICLE_MAX_SPAWN_DISTANCE: f32 = 160.0;
+const REMOTE_VEHICLE_DESPAWN_DISTANCE: f32 = 220.0;
 
 /// Load all audio assets on startup
 pub fn setup_audio(mut commands: Commands, asset_server: Res<AssetServer>) {
@@ -192,6 +242,417 @@ pub fn play_gunshot_sfx(
     shooting_state.shot_fired_this_frame = false;
 }
 
+/// Handle audio events from remote players (spatial audio)
+/// 
+/// When other players shoot, we receive an AudioEvent from the server
+/// and play a spatial sound at their position.
+pub fn handle_remote_audio_events(
+    mut commands: Commands,
+    audio: Option<Res<GameAudio>>,
+    audio_state: Res<AudioState>,
+    // Get our local player ID to skip our own sounds (we already play them locally)
+    local_player: Query<&LocalId, (With<crate::GameClient>, With<Connected>)>,
+    // Receive network messages
+    mut receiver: Query<&mut MessageReceiver<AudioEvent>, (With<crate::GameClient>, With<Connected>)>,
+) {
+    // Don't process until audio assets are ready
+    if !audio_state.assets_ready {
+        return;
+    }
+    let Some(audio) = audio else { return };
+    
+    // Get our peer ID to skip our own sounds
+    let our_id = local_player.iter().next().map(|id| peer_id_to_u64(id.0));
+    
+    // Process incoming audio events
+    for mut recv in receiver.iter_mut() {
+        for audio_event in recv.receive() {
+            // Skip if this is our own sound (we already play it locally)
+            if Some(audio_event.player_id) == our_id {
+                continue;
+            }
+            
+            match audio_event.kind {
+                AudioEventKind::Gunshot { weapon_type: _ } => {
+                    // Random pitch variation for variety (±5%)
+                    let pitch = 0.95 + rand::random::<f32>() * 0.1;
+                    
+                    // Spawn spatial audio at the shooter's position
+                    commands.spawn((
+                        RemoteSpatialSound,
+                        AudioPlayer::new(audio.gun_shot.clone()),
+                        PlaybackSettings::DESPAWN
+                            .with_volume(Volume::Linear(0.8))
+                            .with_speed(pitch)
+                            .with_spatial(true),
+                        Transform::from_translation(audio_event.position),
+                    ));
+                }
+            }
+        }
+    }
+}
+
+/// Ensure we have spatial footstep emitters for nearby remote players + NPCs.
+///
+/// Perf notes:
+/// - No network traffic: we infer movement from replicated transforms.
+/// - We only spawn emitters within a distance threshold.
+pub fn ensure_remote_footstep_emitters(
+    mut commands: Commands,
+    audio: Option<Res<GameAudio>>,
+    audio_state: Res<AudioState>,
+    camera: Query<&Transform, With<Camera3d>>,
+    // Remote players only (local player has their own loop)
+    players: Query<(Entity, &Player, &Transform), (With<Player>, Without<LocalPlayer>)>,
+    // NPCs
+    npcs: Query<(Entity, &Transform), With<Npc>>,
+    // Vehicles to identify which players are driving (no footsteps)
+    vehicles: Query<&VehicleDriver, With<Vehicle>>,
+    existing: Query<&RemoteFootstepEmitter>,
+) {
+    if !audio_state.assets_ready {
+        return;
+    }
+    let Some(audio) = audio else { return };
+
+    let Ok(cam) = camera.single() else { return };
+    let listener_pos = cam.translation;
+
+    // Gather driver IDs so we can skip footsteps for players that are driving.
+    let mut driving_ids: HashSet<u64> = HashSet::new();
+    for driver in vehicles.iter() {
+        if let Some(id) = driver.driver_id {
+            driving_ids.insert(id);
+        }
+    }
+
+    // Existing emitters -> targets.
+    let mut has_emitter: HashSet<Entity> = HashSet::new();
+    for e in existing.iter() {
+        has_emitter.insert(e.target);
+    }
+
+    // Remote players.
+    for (entity, player, transform) in players.iter() {
+        let player_id = peer_id_to_u64(player.client_id);
+        if driving_ids.contains(&player_id) {
+            continue;
+        }
+
+        if has_emitter.contains(&entity) {
+            continue;
+        }
+
+        if transform.translation.distance(listener_pos) > REMOTE_FOOTSTEP_MAX_SPAWN_DISTANCE {
+            continue;
+        }
+
+        commands.spawn((
+            RemoteFootstepEmitter { target: entity },
+            RemoteFootstepState {
+                last_pos: transform.translation,
+                playing: false,
+            },
+            AudioPlayer::new(audio.desert_ambient.clone()),
+            PlaybackSettings::LOOP
+                .paused()
+                .with_volume(Volume::Linear(REMOTE_FOOTSTEP_VOLUME))
+                .with_spatial(true),
+            Transform::from_translation(transform.translation),
+            GlobalTransform::default(),
+        ));
+    }
+
+    // NPCs.
+    for (entity, transform) in npcs.iter() {
+        if has_emitter.contains(&entity) {
+            continue;
+        }
+
+        if transform.translation.distance(listener_pos) > REMOTE_FOOTSTEP_MAX_SPAWN_DISTANCE {
+            continue;
+        }
+
+        commands.spawn((
+            RemoteFootstepEmitter { target: entity },
+            RemoteFootstepState {
+                last_pos: transform.translation,
+                playing: false,
+            },
+            AudioPlayer::new(audio.desert_ambient.clone()),
+            PlaybackSettings::LOOP
+                .paused()
+                .with_volume(Volume::Linear(REMOTE_FOOTSTEP_VOLUME))
+                .with_spatial(true),
+            Transform::from_translation(transform.translation),
+            GlobalTransform::default(),
+        ));
+    }
+}
+
+/// Update remote footstep emitters:
+/// - Follow the target entity
+/// - Pause/play the loop based on inferred movement (with hysteresis)
+pub fn update_remote_footstep_emitters(
+    mut commands: Commands,
+    time: Res<Time>,
+    camera: Query<&Transform, (With<Camera3d>, Without<RemoteFootstepEmitter>)>,
+    target_transforms: Query<&Transform, (Without<RemoteFootstepEmitter>, Without<Camera3d>)>,
+    mut emitters: Query<
+        (
+            Entity,
+            &RemoteFootstepEmitter,
+            &mut RemoteFootstepState,
+            &mut Transform,
+            &SpatialAudioSink,
+        ),
+        Without<Camera3d>,
+    >,
+) {
+    let dt = time.delta_secs();
+    if dt <= 0.0 {
+        return;
+    }
+
+    let Ok(cam) = camera.single() else { return };
+    let listener_pos = cam.translation;
+
+    for (entity, emitter, mut state, mut transform, sink) in emitters.iter_mut() {
+        let Ok(target_tf) = target_transforms.get(emitter.target) else {
+            // Target despawned.
+            commands.entity(entity).despawn();
+            continue;
+        };
+
+        let target_pos = target_tf.translation;
+
+        // Cull far emitters to keep entity count and audio sinks small.
+        if target_pos.distance(listener_pos) > REMOTE_FOOTSTEP_DESPAWN_DISTANCE {
+            commands.entity(entity).despawn();
+            continue;
+        }
+
+        // Follow.
+        transform.translation = target_pos;
+
+        // Infer movement.
+        let delta = target_pos - state.last_pos;
+        state.last_pos = target_pos;
+
+        let horizontal = Vec3::new(delta.x, 0.0, delta.z);
+        let speed = horizontal.length() / dt;
+
+        let should_play = if state.playing {
+            speed > REMOTE_FOOTSTEP_STOP_SPEED
+        } else {
+            speed > REMOTE_FOOTSTEP_START_SPEED
+        };
+
+        if should_play && sink.is_paused() {
+            sink.play();
+            state.playing = true;
+        } else if !should_play && !sink.is_paused() {
+            sink.pause();
+            state.playing = false;
+        }
+    }
+}
+
+/// Ensure spatial vehicle audio emitters exist for nearby *remote* vehicles.
+///
+/// We don't rely on network audio events for engines: we already replicate `VehicleState`,
+/// so we can generate continuous audio locally (lower bandwidth, more robust).
+pub fn ensure_remote_vehicle_audio_emitters(
+    mut commands: Commands,
+    audio: Option<Res<GameAudio>>,
+    audio_state: Res<AudioState>,
+    camera: Query<&Transform, With<Camera3d>>,
+    // Our peer ID (so we can skip the vehicle we're driving; local has non-spatial loops)
+    client_query: Query<&LocalId, (With<crate::GameClient>, With<Connected>)>,
+    vehicles: Query<(Entity, &VehicleDriver, &VehicleState, &Transform), With<Vehicle>>,
+    existing_idle: Query<&RemoteVehicleIdleSound>,
+    existing_cruise: Query<&RemoteVehicleCruiseSound>,
+) {
+    if !audio_state.assets_ready {
+        return;
+    }
+    let Some(audio) = audio else { return };
+
+    let Ok(cam) = camera.single() else { return };
+    let listener_pos = cam.translation;
+
+    let our_id = client_query.iter().next().map(|id| peer_id_to_u64(id.0));
+
+    let mut has_idle: HashSet<Entity> = HashSet::new();
+    for e in existing_idle.iter() {
+        has_idle.insert(e.vehicle);
+    }
+    let mut has_cruise: HashSet<Entity> = HashSet::new();
+    for e in existing_cruise.iter() {
+        has_cruise.insert(e.vehicle);
+    }
+
+    for (veh_entity, driver, _state, veh_tf) in vehicles.iter() {
+        // Skip the vehicle we're driving (local audio handles it).
+        if let (Some(ours), Some(driver_id)) = (our_id, driver.driver_id) {
+            if driver_id == ours {
+                continue;
+            }
+        }
+
+        if veh_tf.translation.distance(listener_pos) > REMOTE_VEHICLE_MAX_SPAWN_DISTANCE {
+            continue;
+        }
+
+        if !has_idle.contains(&veh_entity) {
+            commands.spawn((
+                RemoteVehicleIdleSound { vehicle: veh_entity },
+                AudioPlayer::new(audio.hover_idle.clone()),
+                PlaybackSettings::LOOP
+                    .with_volume(Volume::Linear(0.0))
+                    .with_spatial(true),
+                Transform::from_translation(veh_tf.translation),
+                GlobalTransform::default(),
+            ));
+        }
+
+        if !has_cruise.contains(&veh_entity) {
+            commands.spawn((
+                RemoteVehicleCruiseSound { vehicle: veh_entity },
+                AudioPlayer::new(audio.bike_cruise.clone()),
+                PlaybackSettings::LOOP
+                    .with_volume(Volume::Linear(0.0))
+                    .with_spatial(true),
+                Transform::from_translation(veh_tf.translation),
+                GlobalTransform::default(),
+            ));
+        }
+    }
+}
+
+/// Compute the crossfade + pitch parameters for the motorbike audio based on speed.
+fn vehicle_audio_params(speed: f32) -> (f32, f32, f32, f32) {
+    // Max speed from vehicle constants (~45 m/s)
+    const MAX_SPEED: f32 = 45.0;
+    let speed_ratio = (speed / MAX_SPEED).clamp(0.0, 1.0);
+
+    // === CROSSFADE LOGIC ===
+    // Idle: full volume at 0 speed, fades out by ~30% max speed
+    // Cruise: silent at 0, fades in from ~10% to full at ~40% max speed
+    let idle_volume = if speed_ratio < 0.3 {
+        1.0 - (speed_ratio / 0.3)
+    } else {
+        0.0
+    };
+
+    let cruise_volume = if speed_ratio < 0.1 {
+        0.0
+    } else if speed_ratio < 0.4 {
+        (speed_ratio - 0.1) / 0.3
+    } else {
+        1.0
+    };
+
+    // === PITCH MODULATION ===
+    // Idle: subtle pitch variation 0.9x to 1.05x
+    // Cruise: 0.85x at slow speeds up to 1.25x at max speed
+    let idle_pitch = 0.9 + speed_ratio * 0.15;
+    let cruise_pitch = 0.85 + speed_ratio * 0.4;
+
+    (idle_volume, cruise_volume, idle_pitch, cruise_pitch)
+}
+
+/// Update remote vehicle audio emitters:
+/// - Follow the vehicle transform
+/// - Modulate volume/pitch based on speed
+/// - Despawn when far away or when we become the driver (avoid double audio)
+pub fn update_remote_vehicle_audio_emitters(
+    mut commands: Commands,
+    camera: Query<&Transform, (With<Camera3d>, Without<RemoteVehicleIdleSound>, Without<RemoteVehicleCruiseSound>)>,
+    client_query: Query<&LocalId, (With<crate::GameClient>, With<Connected>)>,
+    vehicles: Query<(&VehicleDriver, &VehicleState, &Transform), (With<Vehicle>, Without<RemoteVehicleIdleSound>, Without<RemoteVehicleCruiseSound>)>,
+    mut idle_emitters: Query<
+        (Entity, &RemoteVehicleIdleSound, &mut Transform, &mut SpatialAudioSink),
+        Without<RemoteVehicleCruiseSound>,
+    >,
+    mut cruise_emitters: Query<
+        (
+            Entity,
+            &RemoteVehicleCruiseSound,
+            &mut Transform,
+            &mut SpatialAudioSink,
+        ),
+        Without<RemoteVehicleIdleSound>,
+    >,
+) {
+    let Ok(cam) = camera.single() else { return };
+    let listener_pos = cam.translation;
+
+    let our_id = client_query.iter().next().map(|id| peer_id_to_u64(id.0));
+
+    // Update idle loops
+    for (entity, e, mut tf, mut sink) in idle_emitters.iter_mut() {
+        let Ok((driver, state, veh_tf)) = vehicles.get(e.vehicle) else {
+            commands.entity(entity).despawn();
+            continue;
+        };
+
+        // If we started driving this vehicle, remove remote audio emitters.
+        if let (Some(ours), Some(driver_id)) = (our_id, driver.driver_id) {
+            if driver_id == ours {
+                commands.entity(entity).despawn();
+                continue;
+            }
+        }
+
+        let pos = veh_tf.translation;
+        if pos.distance(listener_pos) > REMOTE_VEHICLE_DESPAWN_DISTANCE {
+            commands.entity(entity).despawn();
+            continue;
+        }
+
+        tf.translation = pos;
+
+        let horizontal_velocity = Vec3::new(state.velocity.x, 0.0, state.velocity.z);
+        let speed = horizontal_velocity.length();
+        let (idle_v, _cruise_v, idle_pitch, _cruise_pitch) = vehicle_audio_params(speed);
+
+        sink.set_volume(Volume::Linear(idle_v * 0.6));
+        sink.set_speed(idle_pitch);
+    }
+
+    // Update cruise loops
+    for (entity, e, mut tf, mut sink) in cruise_emitters.iter_mut() {
+        let Ok((driver, state, veh_tf)) = vehicles.get(e.vehicle) else {
+            commands.entity(entity).despawn();
+            continue;
+        };
+
+        if let (Some(ours), Some(driver_id)) = (our_id, driver.driver_id) {
+            if driver_id == ours {
+                commands.entity(entity).despawn();
+                continue;
+            }
+        }
+
+        let pos = veh_tf.translation;
+        if pos.distance(listener_pos) > REMOTE_VEHICLE_DESPAWN_DISTANCE {
+            commands.entity(entity).despawn();
+            continue;
+        }
+
+        tf.translation = pos;
+
+        let horizontal_velocity = Vec3::new(state.velocity.x, 0.0, state.velocity.z);
+        let speed = horizontal_velocity.length();
+        let (_idle_v, cruise_v, _idle_pitch, cruise_pitch) = vehicle_audio_params(speed);
+
+        sink.set_volume(Volume::Linear(cruise_v * 0.7));
+        sink.set_speed(cruise_pitch);
+    }
+}
+
 /// Control desert walking ambient:
 /// - Only plays while walking (WASD pressed)
 /// - Only plays in Desert biome
@@ -228,6 +689,26 @@ pub fn stop_ambient_sounds(
         commands.entity(entity).despawn();
     }
     audio_state.ambient_spawned = false;
+}
+
+/// Stop/despawn remote looped spatial sounds (footsteps + vehicle engines).
+///
+/// Remote gunshots are one-shots with `DESPAWN` and don't need explicit cleanup.
+pub fn stop_remote_loop_sounds(
+    mut commands: Commands,
+    footsteps: Query<Entity, With<RemoteFootstepEmitter>>,
+    remote_idle: Query<Entity, With<RemoteVehicleIdleSound>>,
+    remote_cruise: Query<Entity, With<RemoteVehicleCruiseSound>>,
+) {
+    for e in footsteps.iter() {
+        commands.entity(e).despawn();
+    }
+    for e in remote_idle.iter() {
+        commands.entity(e).despawn();
+    }
+    for e in remote_cruise.iter() {
+        commands.entity(e).despawn();
+    }
 }
 
 // =============================================================================
@@ -321,37 +802,7 @@ pub fn update_vehicle_audio(
     // Calculate speed (horizontal only for audio purposes)
     let horizontal_velocity = Vec3::new(vehicle_state.velocity.x, 0.0, vehicle_state.velocity.z);
     let speed = horizontal_velocity.length();
-    
-    // Max speed from vehicle constants (~45 m/s)
-    const MAX_SPEED: f32 = 45.0;
-    let speed_ratio = (speed / MAX_SPEED).clamp(0.0, 1.0);
-    
-    // === CROSSFADE LOGIC ===
-    // Idle: full volume at 0 speed, fades out by ~30% max speed
-    // Cruise: silent at 0, fades in from ~10% to full at ~40% max speed
-    
-    let idle_volume = if speed_ratio < 0.3 {
-        // Full to fading: 1.0 at 0%, ~0.0 at 30%
-        1.0 - (speed_ratio / 0.3)
-    } else {
-        0.0
-    };
-    
-    let cruise_volume = if speed_ratio < 0.1 {
-        0.0
-    } else if speed_ratio < 0.4 {
-        // Fade in from 10% to 40% speed
-        (speed_ratio - 0.1) / 0.3
-    } else {
-        1.0
-    };
-    
-    // === PITCH MODULATION ===
-    // Idle: subtle pitch variation 0.9x to 1.05x
-    // Cruise: 0.85x at slow speeds up to 1.25x at max speed
-    
-    let idle_pitch = 0.9 + speed_ratio * 0.15; // 0.9 to 1.05
-    let cruise_pitch = 0.85 + speed_ratio * 0.4; // 0.85 to 1.25
+    let (idle_volume, cruise_volume, idle_pitch, cruise_pitch) = vehicle_audio_params(speed);
     
     // Apply to idle sound
     if let Ok(mut sink) = idle_sink.single_mut() {
@@ -389,7 +840,10 @@ pub struct GameAudioPlugin;
 impl Plugin for GameAudioPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(Startup, setup_audio);
-        app.add_systems(OnExit(GameState::Playing), (stop_ambient_sounds, stop_vehicle_sounds));
+        app.add_systems(
+            OnExit(GameState::Playing),
+            (stop_ambient_sounds, stop_vehicle_sounds, stop_remote_loop_sounds),
+        );
         // Split systems to avoid tuple size limits
         app.add_systems(
             Update,
@@ -406,6 +860,29 @@ impl Plugin for GameAudioPlugin {
         app.add_systems(
             Update,
             play_gunshot_sfx.run_if(in_state(GameState::Playing)),
+        );
+        // Remote player spatial audio
+        app.add_systems(
+            Update,
+            handle_remote_audio_events.run_if(in_state(GameState::Playing)),
+        );
+        // Remote spatial footsteps (players + NPCs)
+        app.add_systems(
+            Update,
+            (
+                ensure_remote_footstep_emitters,
+                update_remote_footstep_emitters,
+            )
+                .run_if(in_state(GameState::Playing)),
+        );
+        // Remote vehicle spatial audio (engines)
+        app.add_systems(
+            Update,
+            (
+                ensure_remote_vehicle_audio_emitters,
+                update_remote_vehicle_audio_emitters,
+            )
+                .run_if(in_state(GameState::Playing)),
         );
         // Vehicle audio systems
         app.add_systems(

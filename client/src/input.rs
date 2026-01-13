@@ -11,7 +11,7 @@ use std::f32::consts::FRAC_PI_2;
 use crate::states::GameState;
 
 /// Camera view mode
-#[derive(Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
 pub enum CameraMode {
     #[default]
     FirstPerson,
@@ -51,6 +51,9 @@ pub struct InputState {
     
     /// True when local player is dead (disables movement input)
     pub is_dead: bool,
+    
+    /// True when inventory UI is open (disables all gameplay input)
+    pub inventory_open: bool,
 }
 
 impl Default for InputState {
@@ -72,6 +75,7 @@ impl Default for InputState {
             vehicle_look_pitch: 0.0,
             aiming: false,
             is_dead: false,
+            inventory_open: false,
         }
     }
 }
@@ -81,6 +85,19 @@ pub fn handle_keyboard_input(
     keyboard: Res<ButtonInput<KeyCode>>,
     mut input_state: ResMut<InputState>,
 ) {
+    // Skip gameplay input if inventory is open
+    if input_state.inventory_open {
+        input_state.forward = false;
+        input_state.backward = false;
+        input_state.left = false;
+        input_state.right = false;
+        input_state.jump = false;
+        input_state.shift = false;
+        input_state.interact_just_pressed = false;
+        input_state.interact = false;
+        return;
+    }
+    
     input_state.forward = keyboard.pressed(KeyCode::KeyW);
     input_state.backward = keyboard.pressed(KeyCode::KeyS);
     input_state.left = keyboard.pressed(KeyCode::KeyA);
@@ -108,6 +125,12 @@ pub fn handle_mouse_input(
     mouse_button: Res<ButtonInput<MouseButton>>,
     mut input_state: ResMut<InputState>,
 ) {
+    // Skip mouse look if inventory is open (but still consume events)
+    if input_state.inventory_open {
+        for _ in mouse_motion.read() {}
+        return;
+    }
+    
     // Track ADS (right-click to toggle, not hold)
     if mouse_button.just_pressed(MouseButton::Right) && !input_state.in_vehicle {
         input_state.aiming = !input_state.aiming;
@@ -243,8 +266,8 @@ pub fn send_input_to_server(
         interact: input_state.interact_just_pressed,
     };
 
-    // Disable all movement input when dead or paused
-    if game_state.get() == &GameState::Paused || input_state.is_dead {
+    // Disable all movement input when dead, paused, or inventory open
+    if game_state.get() == &GameState::Paused || input_state.is_dead || input_state.inventory_open {
         input.forward = false;
         input.backward = false;
         input.left = false;

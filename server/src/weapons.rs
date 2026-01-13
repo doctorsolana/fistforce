@@ -11,6 +11,7 @@ use shared::{
     weapons::{ballistics, damage},
     Bullet, BulletPrevPosition, BulletVelocity, EquippedWeapon, Health,
     BulletImpact, BulletImpactSurface, HitConfirm, DamageReceived, PlayerKilled, ShootRequest, SwitchWeapon, ReloadRequest, ReliableChannel,
+    AudioEvent, AudioEventKind,
     npc_capsule_endpoints, npc_head_center, Npc, NpcPosition, NPC_HEAD_RADIUS, NPC_HEIGHT, NPC_RADIUS,
     Player, PlayerPosition, WorldTerrain, FIXED_TIMESTEP_HZ, PLAYER_HEIGHT, PLAYER_RADIUS,
 };
@@ -49,9 +50,13 @@ pub fn handle_shoot_requests(
     mut commands: Commands,
     mut client_links: Query<(&RemoteId, &mut MessageReceiver<ShootRequest>), With<ClientOf>>,
     mut players: Query<(&Player, &PlayerPosition, &mut EquippedWeapon)>,
+    mut audio_senders: Query<&mut MessageSender<AudioEvent>, (With<ClientOf>, With<Connected>)>,
     time: Res<Time>,
 ) {
     let current_time = time.elapsed_secs();
+    
+    // Collect shots to broadcast audio events after processing
+    let mut shots_fired: Vec<(u64, Vec3, shared::weapons::WeaponType)> = Vec::new();
     
     for (remote_id, mut receiver) in client_links.iter_mut() {
         let peer_id = remote_id.0;
@@ -109,10 +114,26 @@ pub fn handle_shoot_requests(
                 ));
             }
             
+            // Record shot for audio broadcast
+            shots_fired.push((peer_id_to_u64(player.client_id), spawn_pos, weapon.weapon_type));
+            
             info!(
                 "Player {:?} fired {:?} (ammo: {}/{})", 
                 peer_id, weapon.weapon_type, weapon.ammo_in_mag, stats.magazine_size
             );
+        }
+    }
+    
+    // Broadcast audio events to all connected clients
+    for (shooter_id, position, weapon_type) in shots_fired {
+        let audio_event = AudioEvent {
+            player_id: shooter_id,
+            position,
+            kind: AudioEventKind::Gunshot { weapon_type },
+        };
+        
+        for mut sender in audio_senders.iter_mut() {
+            sender.send::<ReliableChannel>(audio_event.clone());
         }
     }
 }
@@ -1116,6 +1137,7 @@ fn ray_cylinder_intersection(
 }
 
 /// Handle weapon switch requests from clients
+#[allow(dead_code)]
 pub fn handle_weapon_switch(
     mut client_links: Query<(&RemoteId, &mut MessageReceiver<SwitchWeapon>), With<ClientOf>>,
     mut players: Query<(&Player, &mut EquippedWeapon)>,
@@ -1143,25 +1165,27 @@ pub fn handle_weapon_switch(
 /// Handle reload requests from clients
 pub fn handle_reload_request(
     mut client_links: Query<(&RemoteId, &mut MessageReceiver<ReloadRequest>), With<ClientOf>>,
-    mut players: Query<(&Player, &mut EquippedWeapon)>,
+    mut players: Query<(&Player, &mut EquippedWeapon, &mut shared::Inventory)>,
 ) {
     for (remote_id, mut receiver) in client_links.iter_mut() {
         let peer_id = remote_id.0;
         
         for _msg in receiver.receive() {
-            for (player, mut weapon) in players.iter_mut() {
+            for (player, mut weapon, mut inventory) in players.iter_mut() {
                 if player.client_id == peer_id {
                     let stats = weapon.weapon_type.stats();
+                    let ammo_type = weapon.weapon_type.ammo_type();
                     let needed = stats.magazine_size - weapon.ammo_in_mag;
+                    let reserve_in_inventory = inventory.count_item(ammo_type);
                     
-                    if needed > 0 && weapon.reserve_ammo > 0 {
-                        let available = needed.min(weapon.reserve_ammo);
-                        weapon.ammo_in_mag += available;
-                        weapon.reserve_ammo -= available;
+                    if needed > 0 && reserve_in_inventory > 0 {
+                        // Take ammo from inventory
+                        let taken = weapon.reload_from_inventory(&mut inventory);
                         
                         info!(
-                            "Player {:?} reloaded {:?}: {}/{} (reserve: {})", 
-                            peer_id, weapon.weapon_type, weapon.ammo_in_mag, stats.magazine_size, weapon.reserve_ammo
+                            "Player {:?} reloaded {:?} (took {} ammo): {}/{} (reserve in inventory: {})", 
+                            peer_id, weapon.weapon_type, taken, weapon.ammo_in_mag, stats.magazine_size, 
+                            inventory.count_item(ammo_type)
                         );
                     }
                     break;

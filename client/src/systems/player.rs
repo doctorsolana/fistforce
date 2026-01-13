@@ -10,7 +10,7 @@ use lightyear::prelude::client::Connected;
 use shared::{Health, LocalPlayer, Player, PlayerPosition, PlayerRotation, Vehicle, VehicleDriver, PLAYER_HEIGHT};
 use std::collections::HashMap;
 
-use crate::input::CameraMode;
+use crate::input::{CameraMode, InputState};
 
 // =============================================================================
 // COMPONENTS & RESOURCES
@@ -48,6 +48,14 @@ pub struct RangerAnimState {
     pub walking: bool,
     pub dead: bool,
 }
+
+/// Marker for the local player's model (used for visibility toggling)
+#[derive(Component)]
+pub struct LocalPlayerModel;
+
+/// Tracks the last camera mode to detect changes
+#[derive(Resource, Default)]
+pub struct LastCameraMode(pub Option<CameraMode>);
 
 // =============================================================================
 // ASSET LOADING
@@ -139,24 +147,26 @@ pub fn handle_player_spawned(
 
         // Spawn KayKit Ranger model as a child (so it inherits transform + visibility).
         // NOTE: Our gameplay PlayerPosition is at the capsule center, so we offset the model down.
-        commands.entity(entity).with_children(|parent| {
-            parent.spawn((
-                RangerModelRoot,
-                NeedsRangerRigSetup,
-                SceneRoot(ranger_assets.ranger_scene.clone()),
-                // glTF models in Bevy default to +Z forward; our game treats -Z as forward.
-                // Rotate 180 degrees so the character faces the correct direction.
-                Transform::from_xyz(0.0, -PLAYER_HEIGHT * 0.5, 0.0)
-                    .with_rotation(Quat::from_rotation_y(std::f32::consts::PI))
-                    .with_scale(Vec3::splat(1.0)),
-                GlobalTransform::default(),
-                Visibility::Inherited,
-                InheritedVisibility::default(),
-            ));
-        });
+        let model_entity = commands.spawn((
+            RangerModelRoot,
+            NeedsRangerRigSetup,
+            SceneRoot(ranger_assets.ranger_scene.clone()),
+            // glTF models in Bevy default to +Z forward; our game treats -Z as forward.
+            // Rotate 180 degrees so the character faces the correct direction.
+            Transform::from_xyz(0.0, -PLAYER_HEIGHT * 0.5, 0.0)
+                .with_rotation(Quat::from_rotation_y(std::f32::consts::PI))
+                .with_scale(Vec3::splat(1.0)),
+            GlobalTransform::default(),
+            Visibility::Inherited,
+            InheritedVisibility::default(),
+        )).id();
+        
+        commands.entity(entity).add_child(model_entity);
 
         if is_local {
             commands.entity(entity).insert(LocalPlayer);
+            // Mark the model as belonging to local player for shadow-only rendering
+            commands.entity(model_entity).insert(LocalPlayerModel);
             info!("Local player spawned!");
         }
     }
@@ -318,15 +328,12 @@ pub fn update_ranger_animation(
 // TRANSFORM SYNC
 // =============================================================================
 
-/// Sync player transforms and handle visibility based on camera mode
+/// Sync player transforms (visibility is handled by update_local_player_visibility)
 pub fn sync_player_transforms(
     time: Res<Time>,
-    // In Lightyear 0.25, use LocalId to identify ourselves
-    client_query: Query<&LocalId, (With<crate::GameClient>, With<Connected>)>,
     vehicles: Query<(&VehicleDriver, &Transform), (With<Vehicle>, Without<Player>)>,
-    input_state: Res<crate::input::InputState>,
     mut players: Query<
-        (&Player, &PlayerPosition, &PlayerRotation, &mut Transform, &mut Visibility),
+        (&Player, &PlayerPosition, &PlayerRotation, &mut Transform),
         Without<Vehicle>,
     >,
 ) {
@@ -335,9 +342,6 @@ pub fn sync_player_transforms(
     let rot_rate: f32 = 26.0;
     let t_pos = 1.0_f32 - (-pos_rate * dt).exp();
     let t_rot = 1.0_f32 - (-rot_rate * dt).exp();
-    
-    // Get our peer ID from the connected client entity
-    let our_peer_id = client_query.iter().next().map(|r| r.0);
 
     // Map: driver_id -> vehicle transform (already smoothed in `sync_vehicle_transforms`)
     let mut driver_to_vehicle: HashMap<u64, (Vec3, Quat)> = HashMap::new();
@@ -347,7 +351,7 @@ pub fn sync_player_transforms(
         }
     }
 
-    for (player, position, rotation, mut transform, mut visibility) in players.iter_mut() {
+    for (player, position, rotation, mut transform) in players.iter_mut() {
         // If this player is driving a vehicle, attach their visual to the vehicle to eliminate
         // relative jitter between player and bike at high speed.
         if let Some((veh_pos, veh_rot)) = driver_to_vehicle.get(&peer_id_to_u64(player.client_id)) {
@@ -363,21 +367,36 @@ pub fn sync_player_transforms(
             transform.rotation = transform.rotation.slerp(target_rot, t_rot);
         }
         
-        // Local player visibility depends on camera mode and vehicle state
-        let is_local = our_peer_id.map(|id| player.client_id == id).unwrap_or(false);
-        if is_local {
-            let should_hide = match input_state.camera_mode {
-                CameraMode::FirstPerson => true,  // Always hide in first person
-                CameraMode::ThirdPerson => false, // Show in third person (even in vehicle)
-            };
-            
-            *visibility = if should_hide {
-                Visibility::Hidden
-            } else {
-                Visibility::Inherited
-            };
-        }
     }
+}
+
+/// Update local player model visibility.
+/// In first-person: hide the model so it doesn't block the view.
+/// In third-person: show the model.
+pub fn update_local_player_visibility(
+    mut commands: Commands,
+    input_state: Res<InputState>,
+    mut last_mode: ResMut<LastCameraMode>,
+    local_model: Query<Entity, With<LocalPlayerModel>>,
+) {
+    let Ok(model_root) = local_model.single() else {
+        return;
+    };
+    
+    // Only update when camera mode changes
+    let current_mode = input_state.camera_mode;
+    if last_mode.0 == Some(current_mode) {
+        return;
+    }
+    last_mode.0 = Some(current_mode);
+    
+    // Set visibility based on camera mode
+    let visibility = match current_mode {
+        CameraMode::FirstPerson => Visibility::Hidden,
+        CameraMode::ThirdPerson => Visibility::Inherited,
+    };
+    
+    commands.entity(model_root).insert(visibility);
 }
 
 /// Helper to convert PeerId to u64

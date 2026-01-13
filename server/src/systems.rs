@@ -13,7 +13,10 @@ use shared::{
     VehicleState, VehicleDriver, VehicleInput, InVehicle,
     WorldTerrain, FIXED_TIMESTEP_HZ, SPAWN_POSITION,
     Health, EquippedWeapon, WeaponType,
+    Inventory, HotbarSelection,
 };
+
+use crate::inventory::PreviousHotbarSlot;
 
 /// How long to wait before respawning (seconds)
 const RESPAWN_TIME: f32 = 4.0;
@@ -55,16 +58,36 @@ pub fn handle_connections(
         // Lightyear 0.25 requires you to add these components to the connection entity
         // (the entity with `ClientOf` + `Connected`). Without them, no replication happens,
         // so the client never receives `WorldTime`, `Player`, terrain, etc.
+        // IMPORTANT: enable replication + message I/O on this client link.
+        //
+        // Lightyear 0.25 requires you to add these components to the connection entity
+        // (the entity with `ClientOf` + `Connected`). Without them, no replication happens,
+        // so the client never receives `WorldTime`, `Player`, terrain, etc.
+        //
+        // Split into multiple inserts to avoid tuple size limit
         commands.entity(client_entity).insert((
             // Replication out: server -> this client
             ReplicationSender::new(shared::protocol::tick_duration(), SendUpdatesMode::SinceLastAck, false),
-            // Gameplay messages (explicitly added; otherwise failures here are completely silent).
-            //
-            // Client -> Server
+            // Client -> Server (gameplay messages)
             MessageReceiver::<PlayerInput>::default(),
             MessageReceiver::<shared::ShootRequest>::default(),
             MessageReceiver::<shared::SwitchWeapon>::default(),
             MessageReceiver::<shared::ReloadRequest>::default(),
+        ));
+        
+        commands.entity(client_entity).insert((
+            // Inventory messages
+            MessageReceiver::<shared::PickupRequest>::default(),
+            MessageReceiver::<shared::DropRequest>::default(),
+            MessageReceiver::<shared::SelectHotbarSlot>::default(),
+            MessageReceiver::<shared::InventoryMoveRequest>::default(),
+            // Chest messages
+            MessageReceiver::<shared::OpenChestRequest>::default(),
+            MessageReceiver::<shared::CloseChestRequest>::default(),
+            MessageReceiver::<shared::ChestTransferRequest>::default(),
+        ));
+        
+        commands.entity(client_entity).insert((
             // Server -> Client
             MessageSender::<shared::HitConfirm>::default(),
             MessageSender::<shared::DamageReceived>::default(),
@@ -86,6 +109,10 @@ pub fn handle_connections(
             // Combat components
             Health::default(),
             EquippedWeapon::new(WeaponType::AssaultRifle),
+            // Inventory with starting items
+            Inventory::with_starting_items(),
+            HotbarSelection { index: 0 },
+            PreviousHotbarSlot { index: Some(0) }, // Track previous slot for ammo sync
             // Replicate to all clients
             Replicate::new(ReplicationMode::SingleServer(NetworkTarget::All)),
             // In Lightyear 0.25, ControlledBy uses an entity reference to the client link

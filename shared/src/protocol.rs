@@ -11,6 +11,11 @@ use crate::components::{
     Npc, NpcPosition, NpcRotation, Player, PlayerPosition, PlayerRotation, Health, EquippedWeapon,
     Bullet, BulletVelocity, WorldTime,
 };
+use crate::items::{
+    Inventory, GroundItem, GroundItemPosition, PickupRequest, DropRequest,
+    HotbarSelection, SelectHotbarSlot, InventoryMoveRequest,
+    ChestStorage, ChestPosition, OpenChestRequest, CloseChestRequest, ChestTransferRequest,
+};
 use crate::vehicle::{Vehicle, VehicleState, VehicleDriver, VehicleInput};
 use crate::weapons::damage::HitZone;
 
@@ -119,6 +124,25 @@ pub struct BulletImpact {
     pub surface: BulletImpactSurface,
 }
 
+/// Type of audio event for spatial audio
+#[derive(Serialize, Deserialize, Debug, PartialEq, Clone, Copy)]
+pub enum AudioEventKind {
+    /// Gunshot sound (weapon type affects which sound to play)
+    Gunshot { weapon_type: crate::weapons::WeaponType },
+}
+
+/// Server -> Client: audio event broadcast for spatial audio
+/// Allows clients to hear other players' sounds (gunshots, etc.)
+#[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
+pub struct AudioEvent {
+    /// ID of the player who made the sound (skip if it's ourselves)
+    pub player_id: u64,
+    /// World position where the sound originated
+    pub position: Vec3,
+    /// Type of audio event
+    pub kind: AudioEventKind,
+}
+
 // --- Channels ---
 // In Lightyear 0.25, Channel trait is auto-implemented for all Send + Sync + 'static types
 
@@ -188,6 +212,27 @@ impl Plugin for ProtocolPlugin {
         app.register_component::<WorldTime>()
             .add_prediction();
 
+        // === INVENTORY COMPONENTS ===
+        app.register_component::<Inventory>()
+            .add_prediction();
+
+        app.register_component::<GroundItem>()
+            .add_prediction();
+
+        app.register_component::<GroundItemPosition>()
+            .add_prediction();
+        
+        // === EQUIPMENT / HOTBAR ===
+        app.register_component::<HotbarSelection>()
+            .add_prediction();
+
+        // === CHEST / STORAGE ===
+        app.register_component::<ChestStorage>()
+            .add_prediction();
+        
+        app.register_component::<ChestPosition>()
+            .add_prediction();
+
         // === MESSAGES ===
         // In Lightyear 0.25, messages are registered for (de)serialization AND we can declare
         // their network direction so the correct MessageSender/MessageReceiver components are
@@ -204,6 +249,20 @@ impl Plugin for ProtocolPlugin {
             .add_direction(NetworkDirection::ClientToServer);
         app.register_message::<ReloadRequest>()
             .add_direction(NetworkDirection::ClientToServer);
+        app.register_message::<PickupRequest>()
+            .add_direction(NetworkDirection::ClientToServer);
+        app.register_message::<DropRequest>()
+            .add_direction(NetworkDirection::ClientToServer);
+        app.register_message::<SelectHotbarSlot>()
+            .add_direction(NetworkDirection::ClientToServer);
+        app.register_message::<InventoryMoveRequest>()
+            .add_direction(NetworkDirection::ClientToServer);
+        app.register_message::<OpenChestRequest>()
+            .add_direction(NetworkDirection::ClientToServer);
+        app.register_message::<CloseChestRequest>()
+            .add_direction(NetworkDirection::ClientToServer);
+        app.register_message::<ChestTransferRequest>()
+            .add_direction(NetworkDirection::ClientToServer);
         
         // Server -> Client
         app.register_message::<HitConfirm>()
@@ -213,6 +272,8 @@ impl Plugin for ProtocolPlugin {
         app.register_message::<DamageReceived>()
             .add_direction(NetworkDirection::ServerToClient);
         app.register_message::<PlayerKilled>()
+            .add_direction(NetworkDirection::ServerToClient);
+        app.register_message::<AudioEvent>()
             .add_direction(NetworkDirection::ServerToClient);
 
         // === CHANNELS ===

@@ -4,8 +4,10 @@
 
 mod audio;
 mod camera;
+mod chest;
 mod crosshair;
 mod input;
+mod pickup;
 mod props;
 mod states;
 mod structures;
@@ -16,6 +18,7 @@ mod weapons;
 mod weapon_view;
 
 use bevy::prelude::*;
+use bevy::audio::{AudioPlugin, SpatialScale};
 use bevy::asset::AssetPlugin;
 use bevy::diagnostic::{EntityCountDiagnosticsPlugin, FrameTimeDiagnosticsPlugin};
 use bevy::render::diagnostic::RenderDiagnosticsPlugin;
@@ -74,6 +77,12 @@ fn main() {
             }),
             ..default()
         })
+        // Spatial audio in rodio uses strong inverse-square falloff. Our world units are ~meters
+        // (player height ~1.8), so we scale distances down to make spatial audio audible.
+        .set(AudioPlugin {
+            default_spatial_scale: SpatialScale::new(0.2),
+            ..default()
+        })
     );
     
     // FPS diagnostics for debug overlay
@@ -104,6 +113,13 @@ fn main() {
     // UI plugins
     app.add_plugins(ui::MainMenuPlugin);
     app.add_plugins(ui::PauseMenuPlugin);
+    app.add_plugins(ui::InventoryPlugin);
+    
+    // Pickup plugin (item pickups with E key)
+    app.add_plugins(pickup::PickupPlugin);
+    
+    // Chest plugin (storage containers)
+    app.add_plugins(chest::ChestPlugin);
     
     // Audio plugin
     app.add_plugins(audio::GameAudioPlugin);
@@ -124,6 +140,7 @@ fn main() {
     app.init_resource::<weapons::ReloadState>();
     app.init_resource::<weapons::DebugBulletTrails>();
     app.init_resource::<weapon_view::CurrentWeaponView>();
+    app.init_resource::<weapon_view::CurrentThirdPersonWeapon>();
 
     // Ensure we clean up visuals when entering menu
     app.add_systems(OnEnter(GameState::MainMenu), systems::enter_main_menu);
@@ -149,6 +166,7 @@ fn main() {
         crosshair::despawn_crosshair,
         crosshair::despawn_death_screen,
         weapon_view::despawn_weapon_hud,
+        weapon_view::despawn_third_person_weapon,
         weapons::despawn_debug_overlay,
     ));
 
@@ -191,7 +209,11 @@ fn main() {
     // Player character visuals/animation (KayKit Ranger)
     app.add_systems(
         Update,
-        (systems::setup_ranger_rig, systems::update_ranger_animation)
+        (
+            systems::setup_ranger_rig,
+            systems::update_ranger_animation,
+            systems::update_local_player_visibility,
+        )
             .run_if(in_state(GameState::Playing)),
     );
 
@@ -263,6 +285,7 @@ fn main() {
             weapon_view::handle_weapon_switch,
             weapon_view::update_weapon_hud,
             weapon_view::update_first_person_weapon,
+            weapon_view::update_third_person_weapon,
             weapon_view::animate_weapon,
         )
             .run_if(in_state(GameState::Playing)),
@@ -270,6 +293,7 @@ fn main() {
 
     // Input resource
     app.init_resource::<input::InputState>();
+    app.init_resource::<systems::LastCameraMode>();
 
     // Generate a unique client ID for logging
     let client_id = rand::random::<u64>();

@@ -250,7 +250,7 @@ impl Default for EquippedWeapon {
         Self {
             weapon_type: weapon,
             ammo_in_mag: stats.magazine_size,
-            reserve_ammo: stats.magazine_size * 3,
+            reserve_ammo: 0, // Reserve ammo now comes from inventory
             last_fire_time: -10.0, // Allow immediate first shot
             aiming: false,
         }
@@ -263,7 +263,7 @@ impl EquippedWeapon {
         Self {
             weapon_type,
             ammo_in_mag: stats.magazine_size,
-            reserve_ammo: stats.magazine_size * 3,
+            reserve_ammo: 0, // Reserve ammo now comes from inventory
             last_fire_time: -10.0,
             aiming: false,
         }
@@ -286,13 +286,34 @@ impl EquippedWeapon {
         }
     }
     
-    /// Reload from reserve ammo
+    /// Reload from reserve ammo (deprecated - use reload_from_inventory instead)
     pub fn reload(&mut self) {
         let stats = self.weapon_type.stats();
         let needed = stats.magazine_size - self.ammo_in_mag;
         let available = needed.min(self.reserve_ammo);
         self.ammo_in_mag += available;
         self.reserve_ammo -= available;
+    }
+    
+    /// Reload from inventory, returns amount of ammo consumed from inventory
+    pub fn reload_from_inventory(&mut self, inventory: &mut crate::items::Inventory) -> u32 {
+        let stats = self.weapon_type.stats();
+        let ammo_type = self.weapon_type.ammo_type();
+        let needed = stats.magazine_size - self.ammo_in_mag;
+        
+        if needed == 0 {
+            return 0;
+        }
+        
+        // Take ammo from inventory
+        let taken = inventory.remove_item(ammo_type, needed);
+        self.ammo_in_mag += taken;
+        taken
+    }
+    
+    /// Check how much reserve ammo is available in inventory
+    pub fn get_reserve_from_inventory(&self, inventory: &crate::items::Inventory) -> u32 {
+        inventory.count_item(self.weapon_type.ammo_type())
     }
     
     /// Get current spread based on aiming state

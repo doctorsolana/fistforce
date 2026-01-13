@@ -64,20 +64,31 @@ pub fn start_connection(
         // IMPORTANT: enable replication receive on this client.
         // Without this, the client will never receive `WorldTime` / `Player` / `Vehicle` / etc.
         ReplicationReceiver::default(),
-        // Gameplay messages (explicitly added to avoid "silent no-op" if required-components don't apply
-        // the way we expect across plugin ordering / connect timing).
-        //
-        // Client -> Server
+        // Client -> Server messages
         MessageSender::<shared::PlayerInput>::default(),
         MessageSender::<shared::ShootRequest>::default(),
         MessageSender::<shared::SwitchWeapon>::default(),
         MessageSender::<shared::ReloadRequest>::default(),
-        // Server -> Client
+        MessageSender::<shared::PickupRequest>::default(),
+        MessageSender::<shared::DropRequest>::default(),
+        MessageSender::<shared::SelectHotbarSlot>::default(),
+        MessageSender::<shared::InventoryMoveRequest>::default(),
+    )).id();
+    
+    // Chest messages (split to avoid tuple size limit)
+    commands.entity(client_entity).insert((
+        MessageSender::<shared::OpenChestRequest>::default(),
+        MessageSender::<shared::CloseChestRequest>::default(),
+        MessageSender::<shared::ChestTransferRequest>::default(),
+    ));
+    
+    // Add server -> client message receivers (split to avoid tuple size limit)
+    commands.entity(client_entity).insert((
         MessageReceiver::<shared::HitConfirm>::default(),
         MessageReceiver::<shared::BulletImpact>::default(),
         MessageReceiver::<shared::DamageReceived>::default(),
         MessageReceiver::<shared::PlayerKilled>::default(),
-    )).id();
+    ));
     
     // Trigger the Connect event to actually initiate the connection
     commands.trigger(Connect { entity: client_entity });
@@ -112,7 +123,13 @@ pub fn grab_cursor(
     windows: Query<Entity, With<PrimaryWindow>>,
     mut cursor_opts: Query<&mut CursorOptions>,
     mouse_button: Res<ButtonInput<MouseButton>>,
+    input_state: Res<crate::input::InputState>,
 ) {
+    // Don't grab cursor when inventory or pause menu is open
+    if input_state.inventory_open {
+        return;
+    }
+    
     let Ok(window_entity) = windows.single() else {
         return;
     };
