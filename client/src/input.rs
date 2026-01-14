@@ -257,7 +257,18 @@ pub fn send_input_to_server(
         driver.driver_id == Some(peer_id_to_u64(our_peer_id))
     });
     
-    let _has_local_player = local_player.iter().next().is_some();
+    // If we don't know which Player is ours yet, don't send inputs.
+    // This prevents the server from moving a "ghost" player while the client camera is not
+    // attached to the correct entity (can happen if initial replication arrives during Connecting).
+    let has_local_player = local_player.iter().next().is_some();
+    if !has_local_player {
+        let now = time.elapsed_secs();
+        if now - *last_warn_time > 1.0 {
+            warn!("send_input_to_server: no LocalPlayer yet; suppressing input until local player is identified");
+            *last_warn_time = now;
+        }
+        return;
+    }
     
     let mut input = PlayerInput {
         forward: input_state.forward,

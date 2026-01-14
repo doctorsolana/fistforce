@@ -61,6 +61,83 @@ pub struct LastCameraMode(pub Option<CameraMode>);
 // ASSET LOADING
 // =============================================================================
 
+// =============================================================================
+// LOCAL PLAYER TAGGING (robust against timing/race conditions)
+// =============================================================================
+
+/// Ensure exactly one `Player` entity is tagged as `LocalPlayer`, based on our `LocalId`.
+///
+/// Why this exists:
+/// - The first replicated `Player` can arrive while we're still in `GameState::Connecting`,
+///   and any `Added<Player>` systems gated to `Playing` will miss it.
+/// - On higher-latency links (e.g. Fly.io), component insertion order can vary; we want the
+///   camera/terrain/UI to *always* converge on the correct local entity.
+pub fn ensure_local_player_tag(
+    mut commands: Commands,
+    client_query: Query<&LocalId, (With<crate::GameClient>, With<Connected>)>,
+    players: Query<(Entity, &Player)>,
+    existing_local: Query<Entity, With<LocalPlayer>>,
+    children_q: Query<&Children>,
+    model_roots: Query<Entity, With<RangerModelRoot>>,
+    existing_local_models: Query<Entity, With<LocalPlayerModel>>,
+    mut did_log: Local<bool>,
+) {
+    let Some(our_peer_id) = client_query.iter().next().map(|r| r.0) else {
+        return;
+    };
+
+    // Find the player entity that belongs to us.
+    let mut matches: Vec<Entity> = Vec::new();
+    for (e, p) in players.iter() {
+        if p.client_id == our_peer_id {
+            matches.push(e);
+        }
+    }
+
+    let Some(local_entity) = matches.first().copied() else {
+        return;
+    };
+
+    if matches.len() > 1 && !*did_log {
+        warn!(
+            "Multiple Player entities matched our peer id {:?} (count={}); selecting the first. This usually indicates a reconnect/duplication issue.",
+            our_peer_id,
+            matches.len()
+        );
+        *did_log = true;
+    }
+
+    // Enforce exactly one LocalPlayer.
+    for e in existing_local.iter() {
+        if e != local_entity {
+            commands.entity(e).remove::<LocalPlayer>();
+        }
+    }
+    commands.entity(local_entity).insert(LocalPlayer);
+
+    // Try to enforce exactly one LocalPlayerModel as well (used by visibility toggling).
+    // Model might not exist yet if assets are still loading, so this is best-effort and
+    // will converge once the child exists.
+    let mut local_model_root: Option<Entity> = None;
+    if let Ok(children) = children_q.get(local_entity) {
+        for child in children.iter() {
+            if model_roots.get(child).is_ok() {
+                local_model_root = Some(child);
+                break;
+            }
+        }
+    }
+
+    if let Some(model_root) = local_model_root {
+        for e in existing_local_models.iter() {
+            if e != model_root {
+                commands.entity(e).remove::<LocalPlayerModel>();
+            }
+        }
+        commands.entity(model_root).insert(LocalPlayerModel);
+    }
+}
+
 /// Load the KayKit Ranger model + basic Idle/Walk animations and build an `AnimationGraph`.
 ///
 /// Notes:

@@ -182,6 +182,21 @@ fn main() {
             .run_if(in_state(GameState::Playing).or(in_state(GameState::Paused))),
     );
 
+    // Replication-driven spawn/setup must NOT be gated solely to `Playing`.
+    // Initial snapshots can arrive while we're still in `Connecting` (especially over WAN),
+    // which would cause `Added<T>` handlers to miss and leave the client in a "ghost" state.
+    app.add_systems(
+        Update,
+        (
+            systems::handle_player_spawned,
+            systems::handle_npc_spawned,
+            systems::handle_vehicle_spawned,
+            systems::ensure_local_player_tag,
+        )
+            .chain()
+            .run_if(in_state(GameState::Connecting).or(in_state(GameState::Playing))),
+    );
+
     // Gameplay systems (only when playing) - split into groups to avoid tuple limit
     // ORDER MATTERS (and we enforce it): vehicles -> players (attach to vehicles) -> camera.
     app.add_systems(
@@ -191,9 +206,6 @@ fn main() {
             input::update_vehicle_state,
             input::handle_mouse_input,
             input::update_death_state,
-            systems::handle_player_spawned,
-            systems::handle_npc_spawned,
-            systems::handle_vehicle_spawned,
             systems::grab_cursor,
             // Hard-chain the render pose pipeline so we never read a stale vehicle transform.
             (

@@ -6,6 +6,7 @@
 use bevy::prelude::*;
 use bevy::audio::Volume;
 use bevy::diagnostic::{DiagnosticsStore, EntityCountDiagnosticsPlugin, FrameTimeDiagnosticsPlugin};
+use bevy::window::{CursorGrabMode, CursorOptions, PrimaryWindow};
 use lightyear::prelude::*;
 use shared::{
     weapons::{ballistics, WeaponDebugMode, WeaponType},
@@ -65,6 +66,16 @@ pub fn setup_weapon_audio_assets(
 use crate::crosshair;
 use crate::input::InputState;
 use crate::states::GameState;
+
+/// Prevent the "click to focus/grab cursor" from also firing a shot.
+///
+/// When the cursor transitions from unlocked -> locked, we suppress firing until the
+/// left mouse button is released once.
+#[derive(Default)]
+pub(crate) struct CursorGrabShootGuard {
+    last_locked: Option<bool>,
+    suppress_until_release: bool,
+}
 
 /// Resource to track shooting state
 #[derive(Resource)]
@@ -181,6 +192,10 @@ pub fn handle_shoot_input(
     time: Res<Time>,
     game_state: Res<State<GameState>>,
     mut last_warn_time: Local<f32>,
+    // Cursor state - don't shoot if cursor isn't grabbed yet (first click grabs, doesn't fire)
+    windows: Query<Entity, With<PrimaryWindow>>,
+    cursor_opts: Query<&CursorOptions>,
+    mut cursor_guard: Local<CursorGrabShootGuard>,
 ) {
     // Reset flags each frame
     shooting_state.shot_fired_this_frame = false;
@@ -189,6 +204,36 @@ pub fn handle_shoot_input(
     
     // Don't shoot if paused
     if game_state.get() != &GameState::Playing {
+        return;
+    }
+    
+    // --- Cursor grab guard (prevents focus-click from shooting) ---
+    let cursor_locked = windows
+        .single()
+        .ok()
+        .and_then(|window_entity| cursor_opts.get(window_entity).ok())
+        .map(|c| c.grab_mode == CursorGrabMode::Locked)
+        .unwrap_or(false);
+
+    let last_locked = cursor_guard.last_locked.unwrap_or(cursor_locked);
+    cursor_guard.last_locked = Some(cursor_locked);
+
+    // If we just locked this frame, suppress until LMB is released once.
+    if cursor_locked && !last_locked {
+        cursor_guard.suppress_until_release = true;
+        return;
+    }
+
+    // While suppressing, keep eating input until the user releases LMB.
+    if cursor_guard.suppress_until_release {
+        if mouse.pressed(MouseButton::Left) {
+            return;
+        }
+        cursor_guard.suppress_until_release = false;
+    }
+
+    // Still require cursor lock to shoot.
+    if !cursor_locked {
         return;
     }
     
