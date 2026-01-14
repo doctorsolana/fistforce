@@ -175,6 +175,7 @@ fn main() {
         crosshair::despawn_death_screen,
         weapon_view::despawn_weapon_hud,
         weapon_view::despawn_third_person_weapon,
+        weapon_view::despawn_remote_third_person_weapons,
         weapons::despawn_debug_overlay,
     ));
 
@@ -308,6 +309,7 @@ fn main() {
             weapon_view::update_weapon_hud,
             weapon_view::update_first_person_weapon,
             weapon_view::update_third_person_weapon,
+            weapon_view::update_remote_third_person_weapons,
             weapon_view::animate_weapon,
         )
             .run_if(in_state(GameState::Playing)),

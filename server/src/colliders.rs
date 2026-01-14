@@ -336,6 +336,7 @@ pub fn resolve_player_static_collisions(
     derived: Option<Res<DerivedColliderLibrary>>,
     colliders: Res<StaticColliders>,
     structure_colliders: Res<StructureColliders>,
+    buildings: Query<(&PlacedBuilding, &BuildingPosition)>,
     mut players: Query<(&mut PlayerPosition, &mut PlayerVelocity, &mut shared::PlayerGrounded, Option<&InVehicle>), With<Player>>,
 ) {
     let Some(derived) = derived else { return };
@@ -367,8 +368,20 @@ pub fn resolve_player_static_collisions(
             STEP_UP_HEIGHT,
         );
 
+        // Resolve against placed buildings (box colliders from build mode)
+        let building_support = resolve_capsule_vs_buildings(
+            &buildings,
+            &mut pos.0,
+            Some(&mut vel.0),
+            PLAYER_RADIUS,
+            PLAYER_HEIGHT,
+            STEP_UP_HEIGHT,
+        );
+
         // Use explicit support contact detection (much more reliable than position heuristics)
-        grounded.on_static = prop_support.has_support || structure_support.has_support;
+        grounded.on_static = prop_support.has_support
+            || structure_support.has_support
+            || building_support.has_support;
 
         // Only snap UP if player fell below terrain (don't snap down — that kills jumping).
         // Use terrain modifications if any exist
@@ -390,6 +403,7 @@ pub fn resolve_npc_static_collisions(
     derived: Option<Res<DerivedColliderLibrary>>,
     colliders: Res<StaticColliders>,
     structure_colliders: Res<StructureColliders>,
+    buildings: Query<(&PlacedBuilding, &BuildingPosition)>,
     mut npcs: Query<(&mut NpcPosition, &Health), With<Npc>>,
 ) {
     let Some(derived) = derived else { return };
@@ -420,6 +434,16 @@ pub fn resolve_npc_static_collisions(
             STEP_UP_HEIGHT,
         );
 
+        // Resolve against placed buildings
+        let _ = resolve_capsule_vs_buildings(
+            &buildings,
+            &mut pos.0,
+            None,
+            NPC_RADIUS,
+            NPC_HEIGHT,
+            STEP_UP_HEIGHT,
+        );
+
         // Only snap UP if NPC fell below terrain.
         let ground_y = terrain.get_height(pos.0.x, pos.0.z);
         let min_y = ground_y + shared::ground_clearance_center();
@@ -434,6 +458,7 @@ pub fn resolve_vehicle_static_collisions(
     derived: Option<Res<DerivedColliderLibrary>>,
     colliders: Res<StaticColliders>,
     structure_colliders: Res<StructureColliders>,
+    buildings: Query<(&PlacedBuilding, &BuildingPosition)>,
     mut vehicles: Query<&mut VehicleState>,
 ) {
     let Some(derived) = derived else { return };
@@ -466,6 +491,16 @@ pub fn resolve_vehicle_static_collisions(
         // Resolve against structures (discard support info - vehicles don't track grounding)
         let _ = resolve_capsule_vs_structures(
             &structure_colliders,
+            &mut pos,
+            Some(&mut vel),
+            bike_radius,
+            bike_height,
+            0.0,
+        );
+
+        // Resolve against placed buildings
+        let _ = resolve_capsule_vs_buildings(
+            &buildings,
             &mut pos,
             Some(&mut vel),
             bike_radius,
@@ -1277,6 +1312,160 @@ fn resolve_capsule_vs_structures(
         }
     }
     
+    support
+}
+
+/// Resolve capsule vs placed building colliders (simple box from building footprint + height)
+/// Returns support contact information for grounding detection
+fn resolve_capsule_vs_buildings(
+    buildings: &Query<(&PlacedBuilding, &BuildingPosition)>,
+    pos: &mut Vec3,
+    mut velocity: Option<&mut Vec3>,
+    radius: f32,
+    height: f32,
+    step_up_height: f32,
+) -> SupportContact {
+    let half_h = height * 0.5;
+    let step_up_height = step_up_height.max(0.0);
+    let sphere_offset = (half_h - radius).max(0.0);
+    let mut support = SupportContact::default();
+
+    for _ in 0..4 {
+        let mut moved = false;
+
+        for (building, building_pos) in buildings.iter() {
+            let def = building.building_type.definition();
+            let collider = StructureCollider::Box {
+                half_extents: Vec3::new(def.footprint.x * 0.5, def.height * 0.5, def.footprint.y * 0.5),
+            };
+
+            let building_rot = Quat::from_rotation_y(building.rotation);
+            let building_scale = 1.0;
+
+            // Broad-phase: bounding sphere rejection
+            let bounding_r = get_structure_bounding_radius(&collider, building_scale);
+            let to_building = *pos - building_pos.0;
+            let dist2 = to_building.length_squared();
+            let max_dist = radius + bounding_r + half_h;
+            if dist2 >= max_dist * max_dist {
+                continue;
+            }
+
+            // Narrow-phase: capsule vs structure shape (box)
+            let sphere_positions = [
+                *pos - Vec3::Y * sphere_offset, // Bottom (feet)
+                *pos,                           // Middle
+                *pos + Vec3::Y * sphere_offset, // Top
+            ];
+
+            let mut best_penetration = 0.0f32;
+            let mut best_normal = Vec3::ZERO;
+            let mut best_sphere_idx: usize = 1;
+            let mut bottom_support_normal = Vec3::ZERO;
+            let mut bottom_has_support = false;
+
+            for (sphere_idx, sphere_pos) in sphere_positions.iter().copied().enumerate() {
+                if let Some((pen, normal)) = sphere_vs_structure(
+                    sphere_pos,
+                    radius,
+                    &collider,
+                    building_pos.0,
+                    building_rot,
+                    building_scale,
+                ) {
+                    if sphere_idx == 0 && normal.y > SupportContact::WALKABLE_THRESHOLD {
+                        bottom_has_support = true;
+                        if normal.y > bottom_support_normal.y {
+                            bottom_support_normal = normal;
+                        }
+                    }
+                    if pen > best_penetration {
+                        best_penetration = pen;
+                        best_normal = normal;
+                        best_sphere_idx = sphere_idx;
+                    }
+                }
+            }
+
+            if best_penetration <= 0.0 {
+                continue;
+            }
+
+            let is_walkable_slope = best_normal.y > SupportContact::WALKABLE_THRESHOLD;
+
+            if bottom_has_support {
+                support.has_support = true;
+                if bottom_support_normal.y > support.support_normal.y {
+                    support.support_normal = bottom_support_normal;
+                }
+            }
+
+            // --- Step-up ---
+            let vel_y = velocity.as_deref().map(|v| v.y).unwrap_or(0.0);
+            let can_step = step_up_height > 0.0
+                && best_sphere_idx == 0
+                && best_normal.y.abs() < 0.2
+                && vel_y <= 0.0;
+
+            if can_step {
+                let mut test_pos = *pos;
+                test_pos.y += step_up_height;
+
+                let test_sphere_positions = [
+                    test_pos - Vec3::Y * sphere_offset,
+                    test_pos,
+                    test_pos + Vec3::Y * sphere_offset,
+                ];
+
+                let mut still_colliding = false;
+                for test_sphere_pos in test_sphere_positions.iter().copied() {
+                    if sphere_vs_structure(
+                        test_sphere_pos,
+                        radius,
+                        &collider,
+                        building_pos.0,
+                        building_rot,
+                        building_scale,
+                    )
+                    .is_some()
+                    {
+                        still_colliding = true;
+                        break;
+                    }
+                }
+
+                if !still_colliding {
+                    pos.y = test_pos.y;
+                    if let Some(v) = velocity.as_deref_mut() {
+                        v.y = v.y.max(0.0);
+                    }
+                    support.has_support = true;
+                    moved = true;
+                    continue;
+                }
+            }
+
+            // Push out
+            let push = best_normal * best_penetration;
+            pos.x += push.x;
+            pos.y += if is_walkable_slope { push.y } else { push.y.max(0.0) };
+            pos.z += push.z;
+
+            if let Some(v) = velocity.as_deref_mut() {
+                let vn = v.dot(best_normal);
+                if vn < 0.0 {
+                    *v -= best_normal * vn;
+                }
+            }
+
+            moved = true;
+        }
+
+        if !moved {
+            break;
+        }
+    }
+
     support
 }
 

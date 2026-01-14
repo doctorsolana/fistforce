@@ -6,8 +6,10 @@
 use bevy::prelude::*;
 use lightyear::prelude::*;
 use shared::{
-    weapons::WeaponType, EquippedWeapon, LocalPlayer, SelectHotbarSlot, HotbarSelection, ReliableChannel,
+    weapons::WeaponType, EquippedWeapon, LocalPlayer, SelectHotbarSlot, HotbarSelection, ReliableChannel, Player,
 };
+
+use std::collections::{HashMap, HashSet};
 
 use crate::input::{CameraMode, InputState};
 
@@ -19,6 +21,12 @@ pub struct FirstPersonWeapon;
 #[derive(Component)]
 pub struct ThirdPersonWeapon;
 
+/// Marker for third-person weapons on remote players
+#[derive(Component)]
+pub struct RemoteThirdPersonWeapon {
+    pub owner: Entity,
+    pub weapon_type: WeaponType,
+}
 /// Track which weapon the third-person model is showing
 #[derive(Resource, Default)]
 pub struct CurrentThirdPersonWeapon {
@@ -668,6 +676,67 @@ pub fn update_third_person_weapon(
     }
 }
 
+/// Update third-person weapon models for remote players
+pub fn update_remote_third_person_weapons(
+    mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    remote_players: Query<(Entity, &EquippedWeapon), (With<Player>, Without<LocalPlayer>)>,
+    existing_weapons: Query<(Entity, &RemoteThirdPersonWeapon)>,
+) {
+    let mut existing_by_owner: HashMap<Entity, (Entity, WeaponType)> = HashMap::new();
+    for (weapon_entity, weapon) in existing_weapons.iter() {
+        existing_by_owner.insert(weapon.owner, (weapon_entity, weapon.weapon_type));
+    }
+
+    let mut seen_owners: HashSet<Entity> = HashSet::new();
+
+    for (player_entity, weapon) in remote_players.iter() {
+        seen_owners.insert(player_entity);
+        let weapon_type = weapon.weapon_type;
+
+        if weapon_type == WeaponType::Unarmed {
+            if let Some((weapon_entity, _)) = existing_by_owner.remove(&player_entity) {
+                commands.entity(weapon_entity).despawn();
+            }
+            continue;
+        }
+
+        match existing_by_owner.get(&player_entity) {
+            Some((weapon_entity, existing_type)) if *existing_type == weapon_type => {
+                // Correct weapon already present
+            }
+            Some((weapon_entity, _)) => {
+                // Weapon type changed - replace
+                commands.entity(*weapon_entity).despawn();
+                spawn_remote_third_person_weapon(
+                    &mut commands,
+                    &mut meshes,
+                    &mut materials,
+                    weapon_type,
+                    player_entity,
+                );
+            }
+            None => {
+                spawn_remote_third_person_weapon(
+                    &mut commands,
+                    &mut meshes,
+                    &mut materials,
+                    weapon_type,
+                    player_entity,
+                );
+            }
+        }
+    }
+
+    // Despawn weapons whose owners no longer exist
+    for (weapon_entity, weapon) in existing_weapons.iter() {
+        if !seen_owners.contains(&weapon.owner) {
+            commands.entity(weapon_entity).despawn();
+        }
+    }
+}
+
 /// Spawn a simplified third-person weapon model attached to the player
 fn spawn_third_person_weapon(
     commands: &mut Commands,
@@ -802,6 +871,138 @@ fn spawn_third_person_weapon(
     commands.entity(player_entity).add_child(weapon_entity);
 }
 
+/// Spawn a simplified third-person weapon model for a remote player
+fn spawn_remote_third_person_weapon(
+    commands: &mut Commands,
+    meshes: &mut ResMut<Assets<Mesh>>,
+    materials: &mut ResMut<Assets<StandardMaterial>>,
+    weapon_type: WeaponType,
+    player_entity: Entity,
+) {
+    // Weapon materials (same as first-person but we can adjust)
+    let metal_material = materials.add(StandardMaterial {
+        base_color: Color::srgb(0.15, 0.15, 0.18),
+        metallic: 0.9,
+        perceptual_roughness: 0.3,
+        ..default()
+    });
+    
+    let grip_material = materials.add(StandardMaterial {
+        base_color: Color::srgb(0.08, 0.06, 0.04),
+        metallic: 0.1,
+        perceptual_roughness: 0.8,
+        ..default()
+    });
+
+    // Position relative to player - roughly where hands would hold a weapon
+    let base_offset = Vec3::new(0.2, 0.15, -0.35);
+    
+    let weapon_entity = commands.spawn((
+        RemoteThirdPersonWeapon { owner: player_entity, weapon_type },
+        Transform::from_translation(base_offset)
+            .with_rotation(Quat::from_rotation_y(-0.1)),
+        GlobalTransform::default(),
+        Visibility::Inherited,
+        InheritedVisibility::default(),
+    )).id();
+    
+    // Build simplified weapon models (less detail than first-person)
+    let scale = 0.8;
+    
+    match weapon_type {
+        WeaponType::Pistol => {
+            let body = meshes.add(Cuboid::new(0.04 * scale, 0.08 * scale, 0.12 * scale));
+            let barrel = meshes.add(Cylinder::new(0.012 * scale, 0.08 * scale));
+            
+            commands.entity(weapon_entity).with_children(|parent| {
+                parent.spawn((
+                    Mesh3d(body),
+                    MeshMaterial3d(metal_material.clone()),
+                    Transform::default(),
+                ));
+                parent.spawn((
+                    Mesh3d(barrel),
+                    MeshMaterial3d(metal_material.clone()),
+                    Transform::from_translation(Vec3::new(0.0, 0.0, -0.12 * scale))
+                        .with_rotation(Quat::from_rotation_x(std::f32::consts::FRAC_PI_2)),
+                ));
+            });
+        }
+        WeaponType::AssaultRifle | WeaponType::SMG => {
+            let body = meshes.add(Cuboid::new(0.04 * scale, 0.06 * scale, 0.35 * scale));
+            let barrel = meshes.add(Cylinder::new(0.012 * scale, 0.15 * scale));
+            
+            commands.entity(weapon_entity).with_children(|parent| {
+                parent.spawn((
+                    Mesh3d(body),
+                    MeshMaterial3d(metal_material.clone()),
+                    Transform::default(),
+                ));
+                parent.spawn((
+                    Mesh3d(barrel),
+                    MeshMaterial3d(metal_material.clone()),
+                    Transform::from_translation(Vec3::new(0.0, 0.0, -0.3 * scale))
+                        .with_rotation(Quat::from_rotation_x(std::f32::consts::FRAC_PI_2)),
+                ));
+                parent.spawn((
+                    Mesh3d(meshes.add(Cuboid::new(0.02 * scale, 0.04 * scale, 0.08 * scale))),
+                    MeshMaterial3d(grip_material.clone()),
+                    Transform::from_translation(Vec3::new(0.0, -0.05 * scale, 0.05 * scale)),
+                ));
+            });
+        }
+        WeaponType::Shotgun => {
+            let body = meshes.add(Cuboid::new(0.045 * scale, 0.06 * scale, 0.4 * scale));
+            let barrel = meshes.add(Cylinder::new(0.014 * scale, 0.2 * scale));
+            
+            commands.entity(weapon_entity).with_children(|parent| {
+                parent.spawn((
+                    Mesh3d(body),
+                    MeshMaterial3d(metal_material.clone()),
+                    Transform::default(),
+                ));
+                parent.spawn((
+                    Mesh3d(barrel),
+                    MeshMaterial3d(metal_material.clone()),
+                    Transform::from_translation(Vec3::new(0.0, 0.0, -0.35 * scale))
+                        .with_rotation(Quat::from_rotation_x(std::f32::consts::FRAC_PI_2)),
+                ));
+            });
+        }
+        WeaponType::Sniper => {
+            let body = meshes.add(Cuboid::new(0.04 * scale, 0.06 * scale, 0.5 * scale));
+            let barrel = meshes.add(Cylinder::new(0.015 * scale, 0.3 * scale));
+            let scope = meshes.add(Cylinder::new(0.02 * scale, 0.12 * scale));
+            
+            commands.entity(weapon_entity).with_children(|parent| {
+                parent.spawn((
+                    Mesh3d(body),
+                    MeshMaterial3d(metal_material.clone()),
+                    Transform::default(),
+                ));
+                parent.spawn((
+                    Mesh3d(barrel),
+                    MeshMaterial3d(metal_material.clone()),
+                    Transform::from_translation(Vec3::new(0.0, 0.0, -0.4 * scale))
+                        .with_rotation(Quat::from_rotation_x(std::f32::consts::FRAC_PI_2)),
+                ));
+                parent.spawn((
+                    Mesh3d(scope),
+                    MeshMaterial3d(grip_material.clone()),
+                    Transform::from_translation(Vec3::new(0.0, 0.05 * scale, -0.05 * scale))
+                        .with_rotation(Quat::from_rotation_x(std::f32::consts::FRAC_PI_2)),
+                ));
+            });
+        }
+        WeaponType::Unarmed => {
+            // No model
+        }
+    }
+    
+    // Make weapon a child of the player so it follows them
+    commands.entity(player_entity).add_child(weapon_entity);
+}
+
 /// Despawn third-person weapon when leaving gameplay
 pub fn despawn_third_person_weapon(
     mut commands: Commands,
@@ -812,4 +1013,14 @@ pub fn despawn_third_person_weapon(
         commands.entity(entity).despawn();
     }
     current_tp_weapon.weapon_type = None;
+}
+
+/// Despawn remote third-person weapons when leaving gameplay
+pub fn despawn_remote_third_person_weapons(
+    mut commands: Commands,
+    weapons: Query<Entity, With<RemoteThirdPersonWeapon>>,
+) {
+    for entity in weapons.iter() {
+        commands.entity(entity).despawn();
+    }
 }

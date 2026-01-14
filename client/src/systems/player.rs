@@ -47,6 +47,8 @@ pub struct RangerRigOwner(pub Entity);
 pub struct RangerAnimState {
     pub walking: bool,
     pub dead: bool,
+    pub initialized: bool,
+    pub last_pos: Vec3,
 }
 
 /// Marker for the local player's model (used for visibility toggling)
@@ -338,15 +340,18 @@ pub fn setup_ranger_rig(
 pub fn update_ranger_animation(
     ranger_assets: Option<Res<RangerCharacterAssets>>,
     input_state: Res<crate::input::InputState>,
+    time: Res<Time>,
     mut anim_roots: Query<(&RangerRigOwner, &mut RangerAnimState, &mut AnimationPlayer), With<RangerAnimationRoot>>,
     local_players: Query<(), With<LocalPlayer>>,
     players_with_health: Query<&Health, With<Player>>,
+    player_transforms: Query<&Transform, With<Player>>,
 ) {
     let Some(ranger_assets) = ranger_assets else { return };
 
     let local_is_moving =
         !input_state.in_vehicle
             && (input_state.forward || input_state.backward || input_state.left || input_state.right);
+    let dt = time.delta_secs().max(1e-6);
 
     for (owner, mut state, mut player) in anim_roots.iter_mut() {
         // Check if this player is dead
@@ -375,10 +380,25 @@ pub fn update_ranger_animation(
             continue;
         }
         
-        // Walk animation only for the local player's rig.
+        // Walk animation: local uses input state; remote uses movement speed.
         let is_local = local_players.contains(owner.0);
-
-        let should_walk = is_local && local_is_moving;
+        let should_walk = if is_local {
+            local_is_moving
+        } else if let Ok(transform) = player_transforms.get(owner.0) {
+            // Motion-based walking detection for remote players.
+            let pos = transform.translation;
+            let mut speed_xz = 0.0;
+            if state.initialized {
+                let d = pos - state.last_pos;
+                speed_xz = Vec2::new(d.x, d.z).length() / dt;
+            } else {
+                state.initialized = true;
+            }
+            state.last_pos = pos;
+            speed_xz > 0.15
+        } else {
+            false
+        };
 
         if should_walk && !state.walking {
             player.stop(ranger_assets.idle_node);
