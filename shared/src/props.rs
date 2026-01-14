@@ -533,7 +533,10 @@ pub fn generate_chunk_prop_spawns(terrain: &TerrainGenerator, chunk: ChunkCoord)
                             position,
                             rotation: rot,
                             scale,
-                            render_tuning: PropRenderTuning { casts_shadows: true, visible_end_distance: None },
+                            // Desert is prop-dense; keep rocks cheap:
+                            // - no shadow casting (shadow pass is the #1 GPU cost in dense scenes)
+                            // - aggressive distance culling
+                            render_tuning: PropRenderTuning { casts_shadows: false, visible_end_distance: Some(140.0) },
                         });
                     }
                     // Dead trees: ~5% chance (very rare)
@@ -546,7 +549,8 @@ pub fn generate_chunk_prop_spawns(terrain: &TerrainGenerator, chunk: ChunkCoord)
                             position,
                             rotation: rot,
                             scale,
-                            render_tuning: PropRenderTuning { casts_shadows: true, visible_end_distance: None },
+                            // Dead trees are rare and larger; allow shadows but still cull at distance.
+                            render_tuning: PropRenderTuning { casts_shadows: true, visible_end_distance: Some(200.0) },
                         });
                     }
                 }

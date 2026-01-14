@@ -54,6 +54,9 @@ pub struct InputState {
     
     /// True when inventory UI is open (disables all gameplay input)
     pub inventory_open: bool,
+    
+    /// True when build mode is active (disables shooting but allows movement)
+    pub build_mode_active: bool,
 }
 
 impl Default for InputState {
@@ -76,6 +79,7 @@ impl Default for InputState {
             aiming: false,
             is_dead: false,
             inventory_open: false,
+            build_mode_active: false,
         }
     }
 }

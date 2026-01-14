@@ -98,7 +98,7 @@ pub fn spawn_world(
     // =========================================================================
     let wall_x = 0.0;
     let wall_z = 50.0; // North
-    let wall_ground_height = terrain.generator.get_height(wall_x, wall_z);
+    let wall_ground_height = terrain.get_height(wall_x, wall_z);
     
     // Main wall (big concrete-looking wall)
     let wall_width = 20.0;
@@ -195,7 +195,7 @@ pub fn spawn_world(
     
     for dist in [10, 20, 30, 40, 50] {
         let marker_z = dist as f32;
-        let marker_ground = terrain.generator.get_height(0.0, marker_z);
+        let marker_ground = terrain.get_height(0.0, marker_z);
         let marker_mesh = meshes.add(Cuboid::new(2.0, 0.1, 0.5));
         let marker_entity = commands.spawn((
             Mesh3d(marker_mesh),

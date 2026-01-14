@@ -2,7 +2,7 @@
 //!
 //! Goals:
 //! - Server-authoritative simulation (single source of truth)
-//! - Deterministic ground collision against the procedural heightfield (same seed)
+//! - Deterministic ground collision against the terrain (includes modifications)
 //! - Runs at a fixed timestep (see `FIXED_TIMESTEP_HZ`)
 //!
 //! This is intentionally lightweight (height-sampled terrain) so it scales well for open worlds.
@@ -11,8 +11,8 @@
 use bevy::prelude::*;
 
 use crate::{
-    terrain::TerrainGenerator, PlayerInput, PlayerPosition, PlayerRotation, PlayerVelocity,
-    PLAYER_HEIGHT, PLAYER_SPEED,
+    terrain::WorldTerrain, PlayerInput, PlayerPosition, PlayerRotation, PlayerVelocity,
+    PlayerGrounded, PLAYER_HEIGHT, PLAYER_SPEED,
 };
 
 /// Gravity in m/s^2 (negative Y).
@@ -43,13 +43,15 @@ pub fn ground_clearance_center() -> f32 {
 /// - Updates rotation from input yaw
 /// - Applies acceleration/braking on the XZ plane
 /// - Applies gravity
-/// - Collides against the heightfield ground (sampled from `terrain`)
+/// - Collides against the terrain ground (includes any modifications like building flattening)
+/// - Updates grounded state based on terrain contact
 pub fn step_character(
     input: &PlayerInput,
-    terrain: &TerrainGenerator,
+    terrain: &WorldTerrain,
     position: &mut PlayerPosition,
     rotation: &mut PlayerRotation,
     velocity: &mut PlayerVelocity,
+    grounded: &mut PlayerGrounded,
     dt: f32,
 ) {
     // --- Facing ---
@@ -102,23 +104,12 @@ pub fn step_character(
     velocity.0.x = horiz.x;
     velocity.0.z = horiz.z;
 
-    // --- Ground check (for jumping) ---
-    // Check terrain ground
-    let ground_y = terrain.get_height(position.0.x, position.0.z);
-    let target_y = ground_y + ground_clearance_center();
-    let on_terrain = (position.0.y - target_y).abs() < GROUND_SNAP_DISTANCE || position.0.y <= target_y;
-    
-    // Also consider grounded if not falling fast (standing/running on a structure)
-    // When running on curved surfaces like domes, there are small velocity fluctuations
-    // from the collision system constantly adjusting position - allow jumping through these
-    let not_falling_fast = velocity.0.y > -2.0;
-    
-    let grounded = on_terrain || not_falling_fast;
-
     // --- Jump ---
-    // Allow jump if grounded and not already moving up significantly
-    if input.jump && grounded && velocity.0.y < 1.0 {
+    // Use grounded component (set by collision system last tick) with coyote time
+    if input.jump && grounded.can_jump() && velocity.0.y < 1.0 {
         velocity.0.y = JUMP_VELOCITY;
+        // Reset coyote timer after jumping
+        grounded.time_since_grounded = PlayerGrounded::COYOTE_TIME;
     }
 
     // --- Gravity ---
@@ -132,14 +123,29 @@ pub fn step_character(
     let ground_y = terrain.get_height(position.0.x, position.0.z);
     let target_y = ground_y + ground_clearance_center();
 
+    // Track if we're on terrain this tick
+    let mut on_terrain_now = false;
+
     // Snap if we are below ground, or very close and falling.
     if position.0.y < target_y {
         position.0.y = target_y;
         if velocity.0.y < 0.0 {
             velocity.0.y = 0.0;
         }
+        on_terrain_now = true;
     } else if velocity.0.y <= 0.0 && (position.0.y - target_y) < GROUND_SNAP_DISTANCE {
         position.0.y = target_y;
         velocity.0.y = 0.0;
+        on_terrain_now = true;
+    }
+    
+    // Update grounded state
+    grounded.on_terrain = on_terrain_now;
+    
+    // Update coyote timer
+    if grounded.is_grounded() {
+        grounded.time_since_grounded = 0.0;
+    } else {
+        grounded.time_since_grounded += dt;
     }
 }

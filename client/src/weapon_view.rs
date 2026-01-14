@@ -82,7 +82,7 @@ pub fn handle_weapon_switch(
         hotbar.index = index;
     }
     
-    if let Ok(mut sender) = client_query.single_mut() {
+            if let Ok(mut sender) = client_query.single_mut() {
         let _ = sender.send::<ReliableChannel>(SelectHotbarSlot { index });
     }
 }

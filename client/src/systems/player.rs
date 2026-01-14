@@ -148,17 +148,17 @@ pub fn handle_player_spawned(
         // Spawn KayKit Ranger model as a child (so it inherits transform + visibility).
         // NOTE: Our gameplay PlayerPosition is at the capsule center, so we offset the model down.
         let model_entity = commands.spawn((
-            RangerModelRoot,
-            NeedsRangerRigSetup,
-            SceneRoot(ranger_assets.ranger_scene.clone()),
-            // glTF models in Bevy default to +Z forward; our game treats -Z as forward.
-            // Rotate 180 degrees so the character faces the correct direction.
-            Transform::from_xyz(0.0, -PLAYER_HEIGHT * 0.5, 0.0)
-                .with_rotation(Quat::from_rotation_y(std::f32::consts::PI))
-                .with_scale(Vec3::splat(1.0)),
-            GlobalTransform::default(),
-            Visibility::Inherited,
-            InheritedVisibility::default(),
+                RangerModelRoot,
+                NeedsRangerRigSetup,
+                SceneRoot(ranger_assets.ranger_scene.clone()),
+                // glTF models in Bevy default to +Z forward; our game treats -Z as forward.
+                // Rotate 180 degrees so the character faces the correct direction.
+                Transform::from_xyz(0.0, -PLAYER_HEIGHT * 0.5, 0.0)
+                    .with_rotation(Quat::from_rotation_y(std::f32::consts::PI))
+                    .with_scale(Vec3::splat(1.0)),
+                GlobalTransform::default(),
+                Visibility::Inherited,
+                InheritedVisibility::default(),
         )).id();
         
         commands.entity(entity).add_child(model_entity);
@@ -394,7 +394,7 @@ pub fn update_local_player_visibility(
     let visibility = match current_mode {
         CameraMode::FirstPerson => Visibility::Hidden,
         CameraMode::ThirdPerson => Visibility::Inherited,
-    };
+            };
     
     commands.entity(model_root).insert(visibility);
 }

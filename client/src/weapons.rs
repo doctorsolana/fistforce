@@ -11,6 +11,7 @@ use shared::{
     weapons::{ballistics, WeaponDebugMode, WeaponType},
     Bullet, BulletImpact, BulletImpactSurface, BulletVelocity, EquippedWeapon, HitConfirm, LocalTracer,
     ChunkCoord, LocalPlayer, Player, PlayerPosition, ShootRequest, ReloadRequest, ReliableChannel, WorldTerrain,
+    Vehicle,
 };
 
 /// Marker for the debug overlay UI
@@ -198,6 +199,11 @@ pub fn handle_shoot_input(
     
     // Don't shoot while inventory is open
     if input_state.inventory_open {
+        return;
+    }
+    
+    // Don't shoot while in build mode
+    if input_state.build_mode_active {
         return;
     }
     
@@ -847,7 +853,7 @@ pub fn update_blood_droplets(
         // Check ground collision
         let ground_y = terrain
             .as_ref()
-            .map(|t| t.generator.get_height(new_pos.x, new_pos.z))
+            .map(|t| t.get_height(new_pos.x, new_pos.z))
             .unwrap_or(0.0);
         
         if new_pos.y <= ground_y + 0.02 {
@@ -1149,14 +1155,31 @@ pub fn debug_draw_trajectories(
     }
 }
 
-/// Toggle debug mode with F3
+/// Toggle debug gizmos / trajectory drawing with F4.
 pub fn toggle_debug_mode(
     keyboard: Res<ButtonInput<KeyCode>>,
     mut debug_mode: ResMut<WeaponDebugMode>,
 ) {
-    if keyboard.just_pressed(KeyCode::F3) {
+    if keyboard.just_pressed(KeyCode::F4) {
         debug_mode.0 = !debug_mode.0;
-        info!("Weapon debug mode: {}", if debug_mode.0 { "ON" } else { "OFF" });
+        info!("Debug gizmos: {}", if debug_mode.0 { "ON" } else { "OFF" });
+    }
+}
+
+/// Toggle the perf overlay (FPS + counters) with F3.
+///
+/// This is intentionally separate from debug gizmos so you can inspect performance
+/// without paying the cost of drawing lots of gizmo lines.
+#[derive(Resource, Default)]
+pub struct PerfOverlayEnabled(pub bool);
+
+pub fn toggle_perf_overlay(
+    keyboard: Res<ButtonInput<KeyCode>>,
+    mut overlay: ResMut<PerfOverlayEnabled>,
+) {
+    if keyboard.just_pressed(KeyCode::F3) {
+        overlay.0 = !overlay.0;
+        info!("Perf overlay: {}", if overlay.0 { "ON" } else { "OFF" });
     }
 }
 
@@ -1205,9 +1228,9 @@ pub fn spawn_debug_overlay(mut commands: Commands) {
                 TextColor(Color::srgb(0.85, 0.85, 0.85)),
             ));
             
-            // Debug mode indicator
+            // Key hints
             parent.spawn((
-                Text::new("[F3] Debug Mode ON"),
+                Text::new("[F3] Perf Overlay  |  [F4] Gizmos"),
                 TextFont {
                     font_size: 12.0,
                     ..default()
@@ -1219,6 +1242,7 @@ pub fn spawn_debug_overlay(mut commands: Commands) {
 
 /// Update the debug overlay - show/hide based on debug mode, update FPS
 pub fn update_debug_overlay(
+    overlay_enabled: Res<PerfOverlayEnabled>,
     debug_mode: Res<WeaponDebugMode>,
     diagnostics: Res<DiagnosticsStore>,
     mut overlay_query: Query<&mut Visibility, With<DebugOverlay>>,
@@ -1232,10 +1256,12 @@ pub fn update_debug_overlay(
     players: Query<&PlayerPosition, With<Player>>,
     bullets: Query<(), With<Bullet>>,
     local_tracers: Query<(), With<LocalTracer>>,
+    vehicles: Query<(), With<Vehicle>>,
+    sand_particles: Query<(), With<crate::systems::SandParticle>>,
 ) {
     // Show/hide overlay based on debug mode
     for mut visibility in overlay_query.iter_mut() {
-        *visibility = if debug_mode.0 {
+        *visibility = if overlay_enabled.0 {
             Visibility::Visible
         } else {
             Visibility::Hidden
@@ -1243,7 +1269,7 @@ pub fn update_debug_overlay(
     }
     
     // Update FPS text (only if visible)
-    if debug_mode.0 {
+    if overlay_enabled.0 {
         if let Some(fps_diagnostic) = diagnostics.get(&FrameTimeDiagnosticsPlugin::FPS) {
             if let Some(fps) = fps_diagnostic.smoothed() {
                 for (mut text, mut color) in fps_text_query.iter_mut() {
@@ -1305,10 +1331,13 @@ pub fn update_debug_overlay(
             collider_chunks.extend(center.chunks_in_radius(collider_chunk_radius));
         }
         lines.push_str(&format!(
-            "Entities: {:.0}\nChunks: {}\nProps: {}\nCollider chunks: {}\nCollidable props: {} (baked kinds: {})\nBullets: {} (local tracers: {})\n",
+            "Gizmos: {}\nEntities: {:.0}\nChunks: {}\nProps: {}\nVehicles: {}\nSand particles: {}\nCollider chunks: {}\nCollidable props: {} (baked kinds: {})\nBullets: {} (local tracers: {})\n",
+            if debug_mode.0 { "ON" } else { "OFF" },
             entity_count,
             loaded_chunks.chunks.len(),
             props.iter().count(),
+            vehicles.iter().count(),
+            sand_particles.iter().count(),
             collider_chunks.len(),
             collidable_props,
             baked_kinds,

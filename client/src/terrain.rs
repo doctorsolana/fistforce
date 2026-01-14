@@ -12,6 +12,7 @@ use std::collections::HashSet;
 
 use shared::{
     ChunkCoord, LocalPlayer, PlayerPosition, WorldTerrain, VIEW_DISTANCE, WORLD_SEED,
+    TerrainDeltaChunk,
 };
 
 use crate::states::GameState;
@@ -48,6 +49,15 @@ pub struct LoadedChunks {
     pub chunks: HashSet<ChunkCoord>,
 }
 
+/// Tracks the last seen delta chunk versions for change detection
+#[derive(Resource, Default)]
+pub struct TerrainDeltaState {
+    /// Last seen version per chunk coord
+    pub chunk_versions: std::collections::HashMap<ChunkCoord, u32>,
+    /// Chunks that need mesh regeneration
+    pub dirty_chunks: HashSet<ChunkCoord>,
+}
+
 /// Plugin for terrain rendering
 pub struct TerrainPlugin;
 
@@ -56,10 +66,16 @@ impl Plugin for TerrainPlugin {
         app.init_resource::<LoadedChunks>();
         app.init_resource::<WorldTerrain>();
         app.init_resource::<TerrainStreamingState>();
+        app.init_resource::<TerrainDeltaState>();
         app.add_systems(Startup, setup_terrain_render_assets);
         app.add_systems(
             Update,
-            (update_terrain_chunks, spawn_terrain_chunks)
+            (
+                ingest_delta_chunks_from_server,
+                regenerate_dirty_chunks,
+                update_terrain_chunks,
+                spawn_terrain_chunks,
+            )
                 .chain()
                 .run_if(in_state(GameState::Playing)),
         );
@@ -229,6 +245,66 @@ fn setup_terrain_render_assets(
     info!("Generated procedural terrain textures (256x256 detail + normal map)");
 }
 
+/// Ingest replicated TerrainDeltaChunk components into local WorldTerrain
+fn ingest_delta_chunks_from_server(
+    mut terrain: ResMut<WorldTerrain>,
+    mut delta_state: ResMut<TerrainDeltaState>,
+    replicated_chunks: Query<&TerrainDeltaChunk, Changed<TerrainDeltaChunk>>,
+) {
+    for delta_chunk in replicated_chunks.iter() {
+        let coord = delta_chunk.coord;
+        let last_version = delta_state.chunk_versions.get(&coord).copied().unwrap_or(0);
+        
+        // Only update if version is newer
+        if delta_chunk.version > last_version {
+            info!(
+                "Ingesting delta chunk {:?} v{} (had v{})",
+                coord, delta_chunk.version, last_version
+            );
+            
+            // Update local WorldTerrain
+            let delta_data = delta_chunk.to_delta_data();
+            terrain.set_delta_chunk(coord, delta_data);
+            
+            // Track version
+            delta_state.chunk_versions.insert(coord, delta_chunk.version);
+            
+            // Mark this chunk and neighbors as dirty (for normal seam fixing)
+            delta_state.dirty_chunks.insert(coord);
+            for dx in -1..=1 {
+                for dz in -1..=1 {
+                    if dx != 0 || dz != 0 {
+                        delta_state.dirty_chunks.insert(ChunkCoord::new(coord.x + dx, coord.z + dz));
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Regenerate terrain mesh for dirty chunks
+fn regenerate_dirty_chunks(
+    mut delta_state: ResMut<TerrainDeltaState>,
+    mut loaded_chunks: ResMut<LoadedChunks>,
+    chunk_query: Query<(Entity, &TerrainChunk)>,
+    mut commands: Commands,
+) {
+    if delta_state.dirty_chunks.is_empty() {
+        return;
+    }
+    
+    let dirty: Vec<ChunkCoord> = delta_state.dirty_chunks.drain().collect();
+    info!("Regenerating {} dirty terrain chunks", dirty.len());
+    
+    // Despawn dirty chunks so they get regenerated
+    for (entity, chunk) in chunk_query.iter() {
+        if dirty.contains(&chunk.coord) {
+            commands.entity(entity).despawn();
+            loaded_chunks.chunks.remove(&chunk.coord);
+        }
+    }
+}
+
 /// Determine which chunks should be loaded based on player position
 fn update_terrain_chunks(
     player_query: Query<&PlayerPosition, With<LocalPlayer>>,
@@ -327,8 +403,8 @@ fn spawn_terrain_chunks(
         }
 
         if !loaded_chunks.chunks.contains(&coord) {
-            // Generate chunk mesh
-            let mesh_data = terrain.generator.generate_chunk_vertices(coord);
+            // Generate chunk mesh using the unified terrain (includes any modifications)
+            let mesh_data = terrain.generate_chunk(coord);
             let chunk_pos = coord.world_pos();
 
             // Create mesh

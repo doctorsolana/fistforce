@@ -5,7 +5,8 @@
 use bevy::prelude::*;
 use bevy::camera::visibility::VisibilityRange;
 use bevy::light::NotShadowCaster;
-use shared::{ChunkCoord, WorldTerrain};
+use shared::{ChunkCoord, WorldTerrain, PlacedBuilding, BuildingPosition};
+use shared::building::point_in_any_build_zone;
 use shared::PropRenderTuning;
 use std::collections::HashMap;
 
@@ -65,13 +66,59 @@ impl Plugin for PropsPlugin {
         app.add_systems(
             Update,
             (
+                invalidate_props_for_new_buildings,
                 spawn_chunk_props,
                 apply_prop_render_tuning,
                 cleanup_chunk_props,
                 debug_draw_prop_colliders,
             )
+                .chain()
                 .run_if(in_state(GameState::Playing)),
         );
+    }
+}
+
+/// When a new building is placed, invalidate prop chunks that overlap with its build zone
+fn invalidate_props_for_new_buildings(
+    mut commands: Commands,
+    new_buildings: Query<(&PlacedBuilding, &BuildingPosition), Added<PlacedBuilding>>,
+    mut loaded_prop_chunks: ResMut<LoadedPropChunks>,
+    props: Query<(Entity, &EnvironmentProp)>,
+) {
+    use shared::terrain::CHUNK_SIZE;
+    
+    for (building, position) in new_buildings.iter() {
+        let def = building.building_type.definition();
+        let half_extents = Vec2::new(
+            def.footprint.x / 2.0 + def.flatten_radius,
+            def.footprint.y / 2.0 + def.flatten_radius,
+        );
+        
+        // Find chunks that overlap with the build zone (approximate with AABB)
+        let min_x = (position.0.x - half_extents.x) / CHUNK_SIZE;
+        let max_x = (position.0.x + half_extents.x) / CHUNK_SIZE;
+        let min_z = (position.0.z - half_extents.y) / CHUNK_SIZE;
+        let max_z = (position.0.z + half_extents.y) / CHUNK_SIZE;
+        
+        let min_chunk_x = min_x.floor() as i32;
+        let max_chunk_x = max_x.floor() as i32;
+        let min_chunk_z = min_z.floor() as i32;
+        let max_chunk_z = max_z.floor() as i32;
+        
+        // Despawn props in affected chunks and mark for respawn
+        for cx in min_chunk_x..=max_chunk_x {
+            for cz in min_chunk_z..=max_chunk_z {
+                let coord = ChunkCoord::new(cx, cz);
+                if loaded_prop_chunks.chunks.remove(&coord) {
+                    // Despawn all props in this chunk
+                    for (entity, prop) in props.iter() {
+                        if prop.chunk == coord {
+                            commands.entity(entity).despawn();
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -118,21 +165,44 @@ fn spawn_chunk_props(
     loaded_chunks: Res<LoadedChunks>,
     mut loaded_prop_chunks: ResMut<LoadedPropChunks>,
     world_root_query: Query<Entity, With<ClientWorldRoot>>,
+    buildings_query: Query<(&PlacedBuilding, &BuildingPosition)>,
 ) {
     let Some(assets) = prop_assets else { return };
     let Ok(world_root) = world_root_query.single() else { return };
 
-    // Find chunks that need props
+    // Collect building data for zone filtering
+    let buildings: Vec<(Vec3, shared::BuildingType, f32)> = buildings_query
+        .iter()
+        .map(|(b, p)| (p.0, b.building_type, b.rotation))
+        .collect();
+
+    // Find chunks that need props (limit per frame to avoid hitching during streaming)
+    let mut chunks_spawned = 0usize;
+    let max_prop_chunks_per_frame = 1usize;
+
     for coord in loaded_chunks.chunks.iter() {
+        if chunks_spawned >= max_prop_chunks_per_frame {
+            break;
+        }
         if loaded_prop_chunks.chunks.contains(coord) {
             continue;
         }
 
         let spawns = shared::generate_chunk_prop_spawns(&terrain.generator, *coord);
         for spawn in spawns {
+            // Skip props inside build zones
+            let point_xz = Vec2::new(spawn.position.x, spawn.position.z);
+            if point_in_any_build_zone(point_xz, &buildings) {
+                continue;
+            }
+            
             let Some(scene) = assets.scenes.get(&spawn.kind).cloned() else {
                 continue;
             };
+
+            // Use terrain height (includes modifications)
+            let adjusted_y = terrain.get_height(spawn.position.x, spawn.position.z);
+            let adjusted_position = Vec3::new(spawn.position.x, adjusted_y, spawn.position.z);
 
             let prop = commands
                 .spawn((
@@ -140,7 +210,7 @@ fn spawn_chunk_props(
                     PropKindTag(spawn.kind),
                     spawn.render_tuning,
                     SceneRoot(scene),
-                    Transform::from_translation(spawn.position)
+                    Transform::from_translation(adjusted_position)
                         .with_rotation(spawn.rotation)
                         .with_scale(Vec3::splat(spawn.scale)),
                 ))
@@ -149,6 +219,7 @@ fn spawn_chunk_props(
         }
 
         loaded_prop_chunks.chunks.insert(*coord);
+        chunks_spawned += 1;
     }
 }
 

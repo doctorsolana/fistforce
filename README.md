@@ -44,7 +44,7 @@ Assets live in `client/assets/` (models, audio, `colliders.bin`).
 
 ### Collisions
 
-- **Ground**: Heightfield lookup (`terrain.generator.get_height(x, z)`).
+- **Ground**: Heightfield lookup via `WorldTerrain::get_height(x, z)` — automatically includes terrain modifications (building flattening).
 - **Static props**: Baked convex-hull colliders loaded at server startup; spatial-hash streaming around players.
 - **Entities**: Capsule (player/NPC) and OBB (vehicle) vs convex-hull resolution.
 

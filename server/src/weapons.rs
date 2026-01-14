@@ -539,7 +539,7 @@ pub fn detect_bullet_world_hits(
     const WALL_HEIGHT: f32 = 10.0;
     const WALL_THICKNESS: f32 = 1.0;
 
-    let wall_ground_y = terrain.generator.get_height(WALL_X, WALL_Z);
+    let wall_ground_y = terrain.get_height(WALL_X, WALL_Z);
     let wall_min = Vec3::new(
         WALL_X - WALL_WIDTH * 0.5,
         wall_ground_y,
@@ -764,12 +764,12 @@ fn segment_terrain_intersection(
         return None;
     }
 
-    let f = |p: Vec3| -> f32 { p.y - terrain.generator.get_height(p.x, p.z) };
+    let f = |p: Vec3| -> f32 { p.y - terrain.get_height(p.x, p.z) };
 
     if f(start) <= 0.0 {
-        let ground_y = terrain.generator.get_height(start.x, start.z);
+        let ground_y = terrain.get_height(start.x, start.z);
         let hit_pos = Vec3::new(start.x, ground_y, start.z);
-        let normal = terrain.generator.get_normal(hit_pos.x, hit_pos.z);
+        let normal = terrain.get_normal(hit_pos.x, hit_pos.z);
         return Some((0.0, hit_pos, normal));
     }
 
@@ -795,9 +795,9 @@ fn segment_terrain_intersection(
 
             let t_hit = hi;
             let p_hit = start + dir * t_hit;
-            let ground_y = terrain.generator.get_height(p_hit.x, p_hit.z);
+            let ground_y = terrain.get_height(p_hit.x, p_hit.z);
             let hit_pos = Vec3::new(p_hit.x, ground_y, p_hit.z);
-            let normal = terrain.generator.get_normal(hit_pos.x, hit_pos.z);
+            let normal = terrain.get_normal(hit_pos.x, hit_pos.z);
             return Some((t_hit, hit_pos, normal));
         }
         prev_t = t;
@@ -1132,7 +1132,7 @@ fn ray_cylinder_intersection(
             }
         }
     }
-    
+
     None
 }
 

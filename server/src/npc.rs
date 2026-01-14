@@ -44,7 +44,7 @@ pub fn spawn_npcs_once(
 
     for (npc_id, (x, z)) in spawn_positions.iter().enumerate() {
         let npc_id = (npc_id + 1) as u64;
-        let y = terrain.generator.get_height(*x, *z) + ground_clearance_center();
+        let y = terrain.get_height(*x, *z) + ground_clearance_center();
         let pos = Vec3::new(*x, y, *z);
 
         commands.spawn((
@@ -182,7 +182,7 @@ pub fn tick_npc_ai(
         pos.0.z += step.z;
 
         // Stay glued to the deterministic heightfield.
-        let ground_y = terrain.generator.get_height(pos.0.x, pos.0.z);
+        let ground_y = terrain.get_height(pos.0.x, pos.0.z);
         pos.0.y = ground_y + ground_clearance_center();
 
         // Face movement direction.
@@ -205,7 +205,7 @@ fn pick_random_target(
         let r = min_dist + (max_radius - min_dist) * rng.next_f32();
         let x = home.x + angle.cos() * r;
         let z = home.z + angle.sin() * r;
-        let y = terrain.generator.get_height(x, z) + ground_clearance_center();
+        let y = terrain.get_height(x, z) + ground_clearance_center();
         let candidate = Vec3::new(x, y, z);
 
         let dist_from_current = Vec2::new(candidate.x - current_pos.x, candidate.z - current_pos.z).length();
@@ -219,7 +219,7 @@ fn pick_random_target(
     let r = max_radius * 0.7 + max_radius * 0.3 * rng.next_f32();
     let x = home.x + angle.cos() * r;
     let z = home.z + angle.sin() * r;
-    let y = terrain.generator.get_height(x, z) + ground_clearance_center();
+    let y = terrain.get_height(x, z) + ground_clearance_center();
     Vec3::new(x, y, z)
 }
 
@@ -243,7 +243,7 @@ fn world_to_grid(p: Vec3) -> GridPos {
 fn grid_to_world(terrain: &WorldTerrain, g: GridPos) -> Vec3 {
     let x = g.x as f32 * GRID_CELL_SIZE;
     let z = g.z as f32 * GRID_CELL_SIZE;
-    let y = terrain.generator.get_height(x, z) + ground_clearance_center();
+    let y = terrain.get_height(x, z) + ground_clearance_center();
     Vec3::new(x, y, z)
 }
 

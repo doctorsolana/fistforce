@@ -9,7 +9,7 @@ use std::collections::HashMap;
 
 use shared::{
     ground_clearance_center, step_character, step_vehicle_physics, can_interact_with_vehicle,
-    Player, PlayerInput, PlayerPosition, PlayerRotation, PlayerVelocity,
+    Player, PlayerInput, PlayerPosition, PlayerRotation, PlayerVelocity, PlayerGrounded,
     VehicleState, VehicleDriver, VehicleInput, InVehicle,
     WorldTerrain, FIXED_TIMESTEP_HZ, SPAWN_POSITION,
     Health, EquippedWeapon, WeaponType,
@@ -85,6 +85,8 @@ pub fn handle_connections(
             MessageReceiver::<shared::OpenChestRequest>::default(),
             MessageReceiver::<shared::CloseChestRequest>::default(),
             MessageReceiver::<shared::ChestTransferRequest>::default(),
+            // Building messages
+            MessageReceiver::<shared::PlaceBuildingRequest>::default(),
         ));
         
         commands.entity(client_entity).insert((
@@ -97,7 +99,7 @@ pub fn handle_connections(
 
         let spawn_x = SPAWN_POSITION[0];
         let spawn_z = SPAWN_POSITION[2];
-        let ground_y = terrain.generator.get_height(spawn_x, spawn_z);
+        let ground_y = terrain.get_height(spawn_x, spawn_z);
         let spawn_pos = Vec3::new(spawn_x, ground_y + ground_clearance_center(), spawn_z);
 
         // Spawn player entity
@@ -106,6 +108,7 @@ pub fn handle_connections(
             PlayerPosition(spawn_pos),
             PlayerRotation(0.0),
             PlayerVelocity(Vec3::ZERO),
+            PlayerGrounded::default(),
             // Combat components
             Health::default(),
             EquippedWeapon::new(WeaponType::AssaultRifle),
@@ -241,12 +244,12 @@ pub fn handle_vehicle_interactions(
 pub fn simulate_players(
     terrain: Res<WorldTerrain>,
     inputs: Res<ClientInputs>,
-    mut players: Query<(&Player, &Health, &mut PlayerPosition, &mut PlayerRotation, &mut PlayerVelocity, Option<&InVehicle>, Option<&RespawnTimer>)>,
+    mut players: Query<(&Player, &Health, &mut PlayerPosition, &mut PlayerRotation, &mut PlayerVelocity, &mut PlayerGrounded, Option<&InVehicle>, Option<&RespawnTimer>)>,
     vehicles: Query<&VehicleState>,
 ) {
     let dt = 1.0 / FIXED_TIMESTEP_HZ as f32;
 
-    for (player, health, mut position, mut rotation, mut velocity, in_vehicle, respawn_timer) in players.iter_mut() {
+    for (player, health, mut position, mut rotation, mut velocity, mut grounded, in_vehicle, respawn_timer) in players.iter_mut() {
         // Skip dead players - don't process their input
         if !is_player_alive(health, respawn_timer) {
             // Dead players just stay where they are (no gravity, no movement)
@@ -259,6 +262,7 @@ pub fn simulate_players(
                 position.0 = veh_state.position;
                 rotation.0 = veh_state.heading;
                 velocity.0 = Vec3::ZERO;
+                grounded.on_terrain = true; // Consider grounded while in vehicle
                 continue;
             }
         }
@@ -271,10 +275,11 @@ pub fn simulate_players(
 
         step_character(
             &input,
-            &terrain.generator,
+            &terrain,
             &mut position,
             &mut rotation,
             &mut velocity,
+            &mut grounded,
             dt,
         );
     }
@@ -303,7 +308,7 @@ pub fn simulate_vehicles(
             VehicleInput::default()
         };
 
-        step_vehicle_physics(&vehicle_input, &mut state, &terrain.generator, dt, driver.driver_id.is_some());
+        step_vehicle_physics(&vehicle_input, &mut state, &terrain, dt, driver.driver_id.is_some());
     }
 }
 
@@ -377,7 +382,7 @@ pub fn tick_respawn_timers(
             // Reset position to spawn point
             let spawn_x = SPAWN_POSITION[0];
             let spawn_z = SPAWN_POSITION[2];
-            let ground_y = terrain.generator.get_height(spawn_x, spawn_z);
+            let ground_y = terrain.get_height(spawn_x, spawn_z);
             position.0 = Vec3::new(spawn_x, ground_y + ground_clearance_center(), spawn_z);
             
             // Reset velocity

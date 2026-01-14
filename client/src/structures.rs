@@ -1015,7 +1015,14 @@ fn spawn_chunk_structures(
     let Some(assets) = assets else { return };
     let Ok(world_root) = world_root_query.single() else { return };
 
+    // Limit spawns per frame to reduce startup/streaming hitches.
+    let mut chunks_spawned = 0usize;
+    let max_structure_chunks_per_frame = 1usize;
+
     for coord in loaded_chunks.chunks.iter() {
+        if chunks_spawned >= max_structure_chunks_per_frame {
+            break;
+        }
         if loaded_structure_chunks.chunks.contains(coord) {
             continue;
         }
@@ -1071,6 +1078,7 @@ fn spawn_chunk_structures(
         }
 
         loaded_structure_chunks.chunks.insert(*coord);
+        chunks_spawned += 1;
     }
 }
 

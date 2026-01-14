@@ -16,6 +16,8 @@ use crate::items::{
     HotbarSelection, SelectHotbarSlot, InventoryMoveRequest,
     ChestStorage, ChestPosition, OpenChestRequest, CloseChestRequest, ChestTransferRequest,
 };
+use crate::building::{PlacedBuilding, BuildingPosition, PlaceBuildingRequest};
+use crate::terrain::TerrainDeltaChunk;
 use crate::vehicle::{Vehicle, VehicleState, VehicleDriver, VehicleInput};
 use crate::weapons::damage::HitZone;
 
@@ -233,6 +235,17 @@ impl Plugin for ProtocolPlugin {
         app.register_component::<ChestPosition>()
             .add_prediction();
 
+        // === BUILDINGS ===
+        app.register_component::<PlacedBuilding>()
+            .add_prediction();
+        
+        app.register_component::<BuildingPosition>()
+            .add_prediction();
+        
+        // === TERRAIN DELTA CHUNKS ===
+        app.register_component::<TerrainDeltaChunk>()
+            .add_prediction();
+
         // === MESSAGES ===
         // In Lightyear 0.25, messages are registered for (de)serialization AND we can declare
         // their network direction so the correct MessageSender/MessageReceiver components are
@@ -262,6 +275,8 @@ impl Plugin for ProtocolPlugin {
         app.register_message::<CloseChestRequest>()
             .add_direction(NetworkDirection::ClientToServer);
         app.register_message::<ChestTransferRequest>()
+            .add_direction(NetworkDirection::ClientToServer);
+        app.register_message::<PlaceBuildingRequest>()
             .add_direction(NetworkDirection::ClientToServer);
         
         // Server -> Client

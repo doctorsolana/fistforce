@@ -2,6 +2,7 @@
 //! 
 //! Updated for Lightyear 0.25 / Bevy 0.17
 
+mod building;
 mod systems;
 mod npc;
 mod weapons;
@@ -89,26 +90,26 @@ fn spawn_vehicles_once(
     let bike_positions = [(5.0, 5.0), (8.0, 5.0)]; // Two bikes side by side
     
     for (bike_x, bike_z) in bike_positions {
-        let ground_y = terrain.generator.get_height(bike_x, bike_z);
-        let spawn_height = ground_y + 5.0;
-        
-        commands.spawn((
-            Vehicle { vehicle_type: VehicleType::Motorbike },
-            VehicleState {
-                position: Vec3::new(bike_x, spawn_height, bike_z),
-                velocity: Vec3::ZERO,
-                heading: 0.0,
-                pitch: 0.0,
-                roll: 0.0,
-                angular_velocity_yaw: 0.0,
-                angular_velocity_pitch: 0.0,
-                angular_velocity_roll: 0.0,
-                grounded: false,
-            },
-            VehicleDriver { driver_id: None },
-            Replicate::new(ReplicationMode::SingleServer(NetworkTarget::All)),
-        ));
-        
+        let ground_y = terrain.get_height(bike_x, bike_z);
+    let spawn_height = ground_y + 5.0;
+    
+    commands.spawn((
+        Vehicle { vehicle_type: VehicleType::Motorbike },
+        VehicleState {
+            position: Vec3::new(bike_x, spawn_height, bike_z),
+            velocity: Vec3::ZERO,
+            heading: 0.0,
+            pitch: 0.0,
+            roll: 0.0,
+            angular_velocity_yaw: 0.0,
+            angular_velocity_pitch: 0.0,
+            angular_velocity_roll: 0.0,
+            grounded: false,
+        },
+        VehicleDriver { driver_id: None },
+        Replicate::new(ReplicationMode::SingleServer(NetworkTarget::All)),
+    ));
+
         info!("Spawned motorbike at ({}, {}) - dropping from height {}!", bike_x, bike_z, spawn_height);
     }
 }
@@ -133,6 +134,7 @@ fn main() {
     app.add_plugins(bevy::state::app::StatesPlugin);
 
     // Deterministic world terrain (used for authoritative ground collision)
+    // Includes terrain modifications (building flattening, etc.)
     app.init_resource::<WorldTerrain>();
 
     // Server-side input cache
@@ -140,6 +142,9 @@ fn main() {
     
     // Chest open tracking
     app.init_resource::<inventory::OpenChests>();
+    
+    // Delta chunk entity tracking for terrain modifications
+    app.init_resource::<building::DeltaChunkEntities>();
 
     // Lightyear server plugins (tick_duration = 60Hz)
     app.add_plugins(ServerPlugins {
@@ -164,6 +169,8 @@ fn main() {
     app.add_systems(Update, npc::spawn_npcs_once);
     // Spawn test items after server is started
     app.add_systems(Update, inventory::spawn_test_items.run_if(server_is_started));
+    // Spawn test building after server is started
+    app.add_systems(Update, building::spawn_test_building.run_if(server_is_started));
 
     // Fixed tick: receive inputs, handle interactions, then simulate everyone.
     // Split into multiple system groups to avoid tuple limit
@@ -174,6 +181,7 @@ fn main() {
             world::tick_world_time,
             // Static collider streaming (keep colliders near active players)
             colliders::stream_static_colliders,
+            colliders::invalidate_colliders_for_new_buildings,
             // Structure collider streaming (desert settlements)
             colliders::stream_structure_colliders,
             systems::handle_connections,
@@ -210,6 +218,8 @@ fn main() {
             inventory::handle_close_chest_requests,
             inventory::handle_chest_transfer_requests,
             inventory::auto_close_distant_chests,
+            // Building placement (server-authoritative)
+            building::handle_place_building_requests,
         )
             .chain()
             .run_if(server_is_started),

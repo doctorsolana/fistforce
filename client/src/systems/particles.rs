@@ -83,7 +83,9 @@ pub fn spawn_sand_particles(
             continue;
         }
         
-        let speed = state.velocity.length();
+        // Use horizontal speed only: hover/settling vertical jitter shouldn't create dust.
+        let horizontal_velocity = Vec3::new(state.velocity.x, 0.0, state.velocity.z);
+        let speed = horizontal_velocity.length();
         if speed < 2.0 {
             continue; // Too slow for dust
         }

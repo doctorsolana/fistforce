@@ -8,7 +8,7 @@
 use bevy::prelude::*;
 use serde::{Deserialize, Serialize};
 
-use crate::terrain::{Biome, TerrainGenerator};
+use crate::terrain::{Biome, WorldTerrain};
 
 // =============================================================================
 // VEHICLE TUNING CONSTANTS
@@ -163,7 +163,7 @@ fn bike_up_vector(pitch: f32, roll: f32) -> Vec3 {
 pub fn step_vehicle_physics(
     input: &VehicleInput,
     state: &mut VehicleState,
-    terrain: &TerrainGenerator,
+    terrain: &WorldTerrain,
     dt: f32,
     has_driver: bool,
 ) {

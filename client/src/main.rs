@@ -3,6 +3,7 @@
 //! Updated for Lightyear 0.25 / Bevy 0.17
 
 mod audio;
+mod build_mode;
 mod camera;
 mod chest;
 mod crosshair;
@@ -121,6 +122,9 @@ fn main() {
     // Chest plugin (storage containers)
     app.add_plugins(chest::ChestPlugin);
     
+    // Build mode plugin
+    app.add_plugins(build_mode::BuildModePlugin);
+    
     // Audio plugin
     app.add_plugins(audio::GameAudioPlugin);
 
@@ -136,6 +140,7 @@ fn main() {
     
     // Weapon debug mode resource
     app.init_resource::<WeaponDebugMode>();
+    app.init_resource::<weapons::PerfOverlayEnabled>();
     app.init_resource::<weapons::ShootingState>();
     app.init_resource::<weapons::ReloadState>();
     app.init_resource::<weapons::DebugBulletTrails>();
@@ -271,6 +276,7 @@ fn main() {
             weapons::update_blood_splash_rings,
             weapons::update_blood_ground_splats,
             weapons::handle_hit_confirms,
+            weapons::toggle_perf_overlay,
             weapons::toggle_debug_mode,
             weapons::debug_draw_trajectories,
             weapons::update_debug_overlay,

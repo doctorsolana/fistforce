@@ -665,7 +665,7 @@ pub fn update_desert_walking_ambient(
 ) {
     let Ok(pos) = player_pos.single() else { return };
 
-    let biome = terrain.generator.get_biome(pos.0.x, pos.0.z);
+    let biome = terrain.get_biome(pos.0.x, pos.0.z);
     let walking = (input_state.forward || input_state.backward || input_state.left || input_state.right)
         && !input_state.in_vehicle;
     let should_play = walking && biome == Biome::Desert;

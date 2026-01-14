@@ -1,7 +1,7 @@
+pub mod building;
 pub mod components;
 pub mod colliders;
 pub mod items;
-pub mod movement;
 pub mod npc;
 pub mod physics;
 pub mod player;
@@ -12,10 +12,10 @@ pub mod terrain;
 pub mod vehicle;
 pub mod weapons;
 
+pub use building::*;
 pub use components::*;
 pub use colliders::*;
 pub use items::*;
-pub use movement::*;
 pub use npc::*;
 pub use physics::*;
 pub use player::*;
