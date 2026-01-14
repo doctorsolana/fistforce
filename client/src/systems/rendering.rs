@@ -19,6 +19,10 @@ use bevy::render::view::Msaa;
 #[derive(Component)]
 pub struct SunLight;
 
+/// Marker for the moon directional light (provides visibility at night)
+#[derive(Component)]
+pub struct MoonLight;
+
 // =============================================================================
 // ATMOSPHERE CONFIGURATION
 // =============================================================================
@@ -137,11 +141,12 @@ pub fn setup_rendering(mut commands: Commands) {
 // DAY/NIGHT CYCLE
 // =============================================================================
 
-/// Update sun, ambient light, and sky color based on replicated WorldTime.
-/// Creates beautiful sunrise/sunset transitions.
+/// Update sun, moon, ambient light, and sky color based on replicated WorldTime.
+/// Creates beautiful sunrise/sunset transitions with visible moonlit nights.
 pub fn update_day_night_cycle(
     world_time_query: Query<&shared::WorldTime>,
-    mut sun_query: Query<(&mut DirectionalLight, &mut Transform), (With<SunLight>, Without<Camera3d>)>,
+    mut sun_query: Query<(&mut DirectionalLight, &mut Transform), (With<SunLight>, Without<Camera3d>, Without<MoonLight>)>,
+    mut moon_query: Query<(&mut DirectionalLight, &mut Transform), (With<MoonLight>, Without<Camera3d>, Without<SunLight>)>,
     mut ambient: ResMut<AmbientLight>,
     time: Res<Time>,
     mut debug_timer: Local<f32>,
@@ -205,15 +210,36 @@ pub fn update_day_night_cycle(
     }
 
     // =========================================================================
-    // AMBIENT LIGHT - Desert environment: warm during day, cool at night
+    // MOONLIGHT - Opposite arc of the sun, bright at night
+    // =========================================================================
+    // Moon is on the opposite side of the sky from the sun
+    let moon_dir = Vec3::new(-azimuth.sin() * cos_e, sin_e.abs().max(0.2), -azimuth.cos() * cos_e).normalize_or_zero();
+    
+    // Night factor: inverse of day factor (1 at night, 0 during day)
+    let night_factor = 1.0 - day_factor;
+    
+    // Moon intensity: bright at night, fades during day
+    // Boosted significantly for gameplay visibility (real moonlight is ~0.3 lux, we use ~800)
+    let moon_illuminance = 800.0 * night_factor;
+    
+    for (mut moon_light, mut moon_transform) in moon_query.iter_mut() {
+        moon_transform.rotation = Quat::from_rotation_arc(Vec3::NEG_Z, moon_dir);
+        // Cool silvery-blue moonlight
+        moon_light.color = Color::srgb(0.7, 0.8, 1.0);
+        moon_light.illuminance = moon_illuminance;
+    }
+
+    // =========================================================================
+    // AMBIENT LIGHT - Desert environment: warm during day, cool blue at night
     // =========================================================================
     // With `AtmosphereEnvironmentMapLight`, most ambient should come from the atmosphere-driven IBL.
     // Boost brightness significantly for harsh desert daylight.
     let day_ambient_color = Color::srgb(0.9, 0.85, 0.75);  // Warm sandy tones during day
-    let night_ambient_color = Color::srgb(0.04, 0.05, 0.08);  // Cool blue-ish night
+    let night_ambient_color = Color::srgb(0.15, 0.18, 0.25);  // Cool blue-ish night (brighter for visibility)
     ambient.color = lerp_color(night_ambient_color, day_ambient_color, day_factor);
-    // Much brighter ambient during day for that blazing desert sun feel
-    ambient.brightness = 1.0 + 80.0 * day_factor;  // Up to 81 lux during peak day
+    // Night ambient is now 12 lux (up from 1) so you can actually see
+    // Day ambient peaks at 80 lux for that blazing desert sun feel
+    ambient.brightness = 12.0 + 68.0 * day_factor;
 }
 
 // =============================================================================

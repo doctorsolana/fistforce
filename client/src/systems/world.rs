@@ -5,7 +5,7 @@
 use bevy::prelude::*;
 use bevy::light::{light_consts::lux, CascadeShadowConfigBuilder, SunDisk};
 
-use super::rendering::SunLight;
+use super::rendering::{SunLight, MoonLight};
 
 // =============================================================================
 // COMPONENTS
@@ -80,6 +80,26 @@ pub fn spawn_world(
         ))
         .id();
     commands.entity(root).add_child(sun_light_entity);
+
+    // --- Moon light (provides visibility at night) ---
+    // Softer, cooler light from the opposite direction of the sun
+    let moon_light_entity = commands
+        .spawn((
+            MoonLight,
+            DirectionalLight {
+                // Moonlight is much dimmer than sunlight (~0.3 lux vs 100,000 lux)
+                // But we boost it for gameplay visibility
+                illuminance: 800.0, // Boosted for gameplay - real moonlight is ~0.3 lux
+                shadows_enabled: false, // No moon shadows for performance
+                // Cool silvery-blue moonlight color
+                color: Color::srgb(0.7, 0.8, 1.0),
+                ..default()
+            },
+            // Moon starts on opposite side of the sky from the sun
+            Transform::from_rotation(Quat::from_euler(EulerRot::XYZ, 0.7, -0.3, 0.0)),
+        ))
+        .id();
+    commands.entity(root).add_child(moon_light_entity);
 
     // Initial ambient (will be updated by day/night cycle)
     // Desert environment: warm, bright ambient
