@@ -8,8 +8,33 @@ use bevy::camera::Exposure;
 use bevy::core_pipeline::tonemapping::Tonemapping;
 use bevy::light::{light_consts::lux, AtmosphereEnvironmentMapLight, DirectionalLightShadowMap};
 use bevy::pbr::{Atmosphere, AtmosphereMode, AtmosphereSettings};
-use bevy::post_process::bloom::Bloom;
+use bevy::post_process::bloom::{Bloom, BloomCompositeMode};
 use bevy::render::view::Msaa;
+
+// =============================================================================
+// GRAPHICS SETTINGS RESOURCE
+// =============================================================================
+
+/// Runtime-toggleable graphics settings for troubleshooting and optimization.
+/// Players can adjust these in the pause menu to fix flickering or improve FPS.
+#[derive(Resource, Clone)]
+pub struct GraphicsSettings {
+    pub bloom_enabled: bool,
+    pub shadows_enabled: bool,
+    pub atmosphere_enabled: bool,
+    pub moonlight_enabled: bool,
+}
+
+impl Default for GraphicsSettings {
+    fn default() -> Self {
+        Self {
+            bloom_enabled: true,
+            shadows_enabled: true,
+            atmosphere_enabled: true,
+            moonlight_enabled: true,
+        }
+    }
+}
 
 // =============================================================================
 // COMPONENTS
@@ -108,14 +133,15 @@ pub fn setup_rendering(mut commands: Commands) {
         DESERT_ATMOSPHERE,
         // Atmosphere settings (perf-tuned LUT sizes/samples).
         desert_atmosphere_settings_perf(),
-        // Enhanced bloom for that blazing desert sun
-        // Performance: Use fewer bloom passes (composite_mode)
+        // Bloom for that blazing desert sun glow
+        // Tuned for Metal stability (lower intensity + Additive mode to avoid flickering on M-series)
         Bloom {
-            intensity: 0.2,
-            low_frequency_boost: 0.5,
-            low_frequency_boost_curvature: 0.8,
-            high_pass_frequency: 0.8,
-            ..Bloom::NATURAL
+            intensity: 0.08,  // Lower = more stable on Metal
+            low_frequency_boost: 0.3,
+            low_frequency_boost_curvature: 0.5,
+            high_pass_frequency: 1.0,  // Stricter filter on bright pixels
+            composite_mode: BloomCompositeMode::Additive,
+            ..default()
         },
         // Let the atmosphere drive ambient/IBL lighting for this view.
         // Performance: Tiny cubemap - we mostly use the sun anyway
@@ -143,11 +169,13 @@ pub fn setup_rendering(mut commands: Commands) {
 
 /// Update sun, moon, ambient light, and sky color based on replicated WorldTime.
 /// Creates beautiful sunrise/sunset transitions with visible moonlit nights.
+/// Respects GraphicsSettings for moonlight toggle.
 pub fn update_day_night_cycle(
     world_time_query: Query<&shared::WorldTime>,
     mut sun_query: Query<(&mut DirectionalLight, &mut Transform), (With<SunLight>, Without<Camera3d>, Without<MoonLight>)>,
     mut moon_query: Query<(&mut DirectionalLight, &mut Transform), (With<MoonLight>, Without<Camera3d>, Without<SunLight>)>,
     mut ambient: ResMut<AmbientLight>,
+    settings: Res<GraphicsSettings>,
     time: Res<Time>,
     mut debug_timer: Local<f32>,
 ) {
@@ -220,7 +248,12 @@ pub fn update_day_night_cycle(
     
     // Moon intensity: bright at night, fades during day
     // Boosted significantly for gameplay visibility (real moonlight is ~0.3 lux, we use ~800)
-    let moon_illuminance = 800.0 * night_factor;
+    // Set to 0 if moonlight is disabled in settings
+    let moon_illuminance = if settings.moonlight_enabled {
+        800.0 * night_factor
+    } else {
+        0.0
+    };
     
     for (mut moon_light, mut moon_transform) in moon_query.iter_mut() {
         moon_transform.rotation = Quat::from_rotation_arc(Vec3::NEG_Z, moon_dir);
@@ -240,6 +273,46 @@ pub fn update_day_night_cycle(
     // Night ambient is now 12 lux (up from 1) so you can actually see
     // Day ambient peaks at 80 lux for that blazing desert sun feel
     ambient.brightness = 12.0 + 68.0 * day_factor;
+}
+
+// =============================================================================
+// GRAPHICS SETTINGS APPLICATION
+// =============================================================================
+
+/// Apply graphics settings changes to rendering components.
+/// This system runs when GraphicsSettings is changed and toggles:
+/// - Bloom on the camera
+/// - Shadows on directional lights
+/// - Atmosphere environment map intensity
+pub fn apply_graphics_settings(
+    settings: Res<GraphicsSettings>,
+    mut camera_query: Query<(Option<&mut Bloom>, &mut AtmosphereEnvironmentMapLight), With<Camera3d>>,
+    mut sun_query: Query<&mut DirectionalLight, With<SunLight>>,
+) {
+    // Only run when settings actually changed
+    if !settings.is_changed() {
+        return;
+    }
+
+    info!(
+        "Applying graphics settings: bloom={}, shadows={}, atmosphere={}, moonlight={}",
+        settings.bloom_enabled, settings.shadows_enabled, settings.atmosphere_enabled, settings.moonlight_enabled
+    );
+
+    // Toggle bloom intensity (0 = disabled, 0.2 = enabled)
+    for (bloom_opt, mut atmosphere_light) in camera_query.iter_mut() {
+        if let Some(mut bloom) = bloom_opt {
+            bloom.intensity = if settings.bloom_enabled { 0.08 } else { 0.0 };
+        }
+        
+        // Toggle atmosphere environment map intensity
+        atmosphere_light.intensity = if settings.atmosphere_enabled { 0.8 } else { 0.0 };
+    }
+
+    // Toggle shadows on sun light
+    for mut sun_light in sun_query.iter_mut() {
+        sun_light.shadows_enabled = settings.shadows_enabled;
+    }
 }
 
 // =============================================================================

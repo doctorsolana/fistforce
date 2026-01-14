@@ -146,6 +146,9 @@ fn main() {
     app.init_resource::<weapons::DebugBulletTrails>();
     app.init_resource::<weapon_view::CurrentWeaponView>();
     app.init_resource::<weapon_view::CurrentThirdPersonWeapon>();
+    
+    // Graphics settings (toggleable from pause menu)
+    app.init_resource::<systems::GraphicsSettings>();
 
     // Ensure we clean up visuals when entering menu
     app.add_systems(OnEnter(GameState::MainMenu), systems::enter_main_menu);
@@ -219,6 +222,7 @@ fn main() {
             systems::spawn_sand_particles,
             systems::update_sand_particles,
             systems::update_day_night_cycle,
+            systems::apply_graphics_settings,
         )
             .run_if(in_state(GameState::Playing)),
     );
