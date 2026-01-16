@@ -24,7 +24,7 @@ pub struct PropRenderTuning {
 #[allow(non_camel_case_types)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PropKind {
-    // --- KayKit (Assetsfromassetpack) ---
+    // --- Desert props (nature/desert/) ---
     KayKit_Rock_1_A,
     KayKit_Rock_1_B,
     KayKit_Rock_1_C,
@@ -58,7 +58,7 @@ pub enum PropKind {
     KayKit_Grass_2_A,
     KayKit_Grass_2_B,
 
-    // --- Stylized Nature (StylizedNature) ---
+    // --- Forest props (nature/forest/) ---
     Nature_Pine_1,
     Nature_Pine_2,
     Nature_Pine_3,
@@ -193,85 +193,85 @@ impl PropKind {
     pub const fn scene_path(&self) -> &'static str {
         match self {
             // KayKit rocks
-            PropKind::KayKit_Rock_1_A => "Assetsfromassetpack/gltf/Rock_1_A_Color1.gltf#Scene0",
-            PropKind::KayKit_Rock_1_B => "Assetsfromassetpack/gltf/Rock_1_B_Color1.gltf#Scene0",
-            PropKind::KayKit_Rock_1_C => "Assetsfromassetpack/gltf/Rock_1_C_Color1.gltf#Scene0",
-            PropKind::KayKit_Rock_2_A => "Assetsfromassetpack/gltf/Rock_2_A_Color1.gltf#Scene0",
-            PropKind::KayKit_Rock_2_B => "Assetsfromassetpack/gltf/Rock_2_B_Color1.gltf#Scene0",
-            PropKind::KayKit_Rock_3_A => "Assetsfromassetpack/gltf/Rock_3_A_Color1.gltf#Scene0",
-            PropKind::KayKit_Rock_3_B => "Assetsfromassetpack/gltf/Rock_3_B_Color1.gltf#Scene0",
-            PropKind::KayKit_Rock_3_C => "Assetsfromassetpack/gltf/Rock_3_C_Color1.gltf#Scene0",
+            PropKind::KayKit_Rock_1_A => "nature/desert/Rock_1_A_Color1.gltf#Scene0",
+            PropKind::KayKit_Rock_1_B => "nature/desert/Rock_1_B_Color1.gltf#Scene0",
+            PropKind::KayKit_Rock_1_C => "nature/desert/Rock_1_C_Color1.gltf#Scene0",
+            PropKind::KayKit_Rock_2_A => "nature/desert/Rock_2_A_Color1.gltf#Scene0",
+            PropKind::KayKit_Rock_2_B => "nature/desert/Rock_2_B_Color1.gltf#Scene0",
+            PropKind::KayKit_Rock_3_A => "nature/desert/Rock_3_A_Color1.gltf#Scene0",
+            PropKind::KayKit_Rock_3_B => "nature/desert/Rock_3_B_Color1.gltf#Scene0",
+            PropKind::KayKit_Rock_3_C => "nature/desert/Rock_3_C_Color1.gltf#Scene0",
 
             // KayKit dead trees
-            PropKind::KayKit_Tree_Bare_1_A => "Assetsfromassetpack/gltf/Tree_Bare_1_A_Color1.gltf#Scene0",
-            PropKind::KayKit_Tree_Bare_1_B => "Assetsfromassetpack/gltf/Tree_Bare_1_B_Color1.gltf#Scene0",
-            PropKind::KayKit_Tree_Bare_2_A => "Assetsfromassetpack/gltf/Tree_Bare_2_A_Color1.gltf#Scene0",
-            PropKind::KayKit_Tree_Bare_2_B => "Assetsfromassetpack/gltf/Tree_Bare_2_B_Color1.gltf#Scene0",
+            PropKind::KayKit_Tree_Bare_1_A => "nature/desert/Tree_Bare_1_A_Color1.gltf#Scene0",
+            PropKind::KayKit_Tree_Bare_1_B => "nature/desert/Tree_Bare_1_B_Color1.gltf#Scene0",
+            PropKind::KayKit_Tree_Bare_2_A => "nature/desert/Tree_Bare_2_A_Color1.gltf#Scene0",
+            PropKind::KayKit_Tree_Bare_2_B => "nature/desert/Tree_Bare_2_B_Color1.gltf#Scene0",
 
             // KayKit trees
-            PropKind::KayKit_Tree_1_A => "Assetsfromassetpack/gltf/Tree_1_A_Color1.gltf#Scene0",
-            PropKind::KayKit_Tree_1_B => "Assetsfromassetpack/gltf/Tree_1_B_Color1.gltf#Scene0",
-            PropKind::KayKit_Tree_2_A => "Assetsfromassetpack/gltf/Tree_2_A_Color1.gltf#Scene0",
-            PropKind::KayKit_Tree_2_B => "Assetsfromassetpack/gltf/Tree_2_B_Color1.gltf#Scene0",
-            PropKind::KayKit_Tree_3_A => "Assetsfromassetpack/gltf/Tree_3_A_Color1.gltf#Scene0",
-            PropKind::KayKit_Tree_4_A => "Assetsfromassetpack/gltf/Tree_4_A_Color1.gltf#Scene0",
+            PropKind::KayKit_Tree_1_A => "nature/desert/Tree_1_A_Color1.gltf#Scene0",
+            PropKind::KayKit_Tree_1_B => "nature/desert/Tree_1_B_Color1.gltf#Scene0",
+            PropKind::KayKit_Tree_2_A => "nature/desert/Tree_2_A_Color1.gltf#Scene0",
+            PropKind::KayKit_Tree_2_B => "nature/desert/Tree_2_B_Color1.gltf#Scene0",
+            PropKind::KayKit_Tree_3_A => "nature/desert/Tree_3_A_Color1.gltf#Scene0",
+            PropKind::KayKit_Tree_4_A => "nature/desert/Tree_4_A_Color1.gltf#Scene0",
 
             // KayKit bushes
-            PropKind::KayKit_Bush_1_A => "Assetsfromassetpack/gltf/Bush_1_A_Color1.gltf#Scene0",
-            PropKind::KayKit_Bush_1_B => "Assetsfromassetpack/gltf/Bush_1_B_Color1.gltf#Scene0",
-            PropKind::KayKit_Bush_2_A => "Assetsfromassetpack/gltf/Bush_2_A_Color1.gltf#Scene0",
-            PropKind::KayKit_Bush_2_B => "Assetsfromassetpack/gltf/Bush_2_B_Color1.gltf#Scene0",
-            PropKind::KayKit_Bush_3_A => "Assetsfromassetpack/gltf/Bush_3_A_Color1.gltf#Scene0",
-            PropKind::KayKit_Bush_4_A => "Assetsfromassetpack/gltf/Bush_4_A_Color1.gltf#Scene0",
+            PropKind::KayKit_Bush_1_A => "nature/desert/Bush_1_A_Color1.gltf#Scene0",
+            PropKind::KayKit_Bush_1_B => "nature/desert/Bush_1_B_Color1.gltf#Scene0",
+            PropKind::KayKit_Bush_2_A => "nature/desert/Bush_2_A_Color1.gltf#Scene0",
+            PropKind::KayKit_Bush_2_B => "nature/desert/Bush_2_B_Color1.gltf#Scene0",
+            PropKind::KayKit_Bush_3_A => "nature/desert/Bush_3_A_Color1.gltf#Scene0",
+            PropKind::KayKit_Bush_4_A => "nature/desert/Bush_4_A_Color1.gltf#Scene0",
 
             // KayKit grass
-            PropKind::KayKit_Grass_1_A => "Assetsfromassetpack/gltf/Grass_1_A_Color1.gltf#Scene0",
-            PropKind::KayKit_Grass_1_B => "Assetsfromassetpack/gltf/Grass_1_B_Color1.gltf#Scene0",
-            PropKind::KayKit_Grass_2_A => "Assetsfromassetpack/gltf/Grass_2_A_Color1.gltf#Scene0",
-            PropKind::KayKit_Grass_2_B => "Assetsfromassetpack/gltf/Grass_2_B_Color1.gltf#Scene0",
+            PropKind::KayKit_Grass_1_A => "nature/desert/Grass_1_A_Color1.gltf#Scene0",
+            PropKind::KayKit_Grass_1_B => "nature/desert/Grass_1_B_Color1.gltf#Scene0",
+            PropKind::KayKit_Grass_2_A => "nature/desert/Grass_2_A_Color1.gltf#Scene0",
+            PropKind::KayKit_Grass_2_B => "nature/desert/Grass_2_B_Color1.gltf#Scene0",
 
             // Natureland
-            PropKind::Nature_Pine_1 => "StylizedNature/glTF/Pine_1.gltf#Scene0",
-            PropKind::Nature_Pine_2 => "StylizedNature/glTF/Pine_2.gltf#Scene0",
-            PropKind::Nature_Pine_3 => "StylizedNature/glTF/Pine_3.gltf#Scene0",
-            PropKind::Nature_Pine_4 => "StylizedNature/glTF/Pine_4.gltf#Scene0",
-            PropKind::Nature_Pine_5 => "StylizedNature/glTF/Pine_5.gltf#Scene0",
+            PropKind::Nature_Pine_1 => "nature/forest/Pine_1.gltf#Scene0",
+            PropKind::Nature_Pine_2 => "nature/forest/Pine_2.gltf#Scene0",
+            PropKind::Nature_Pine_3 => "nature/forest/Pine_3.gltf#Scene0",
+            PropKind::Nature_Pine_4 => "nature/forest/Pine_4.gltf#Scene0",
+            PropKind::Nature_Pine_5 => "nature/forest/Pine_5.gltf#Scene0",
 
-            PropKind::Nature_TwistedTree_1 => "StylizedNature/glTF/TwistedTree_1.gltf#Scene0",
-            PropKind::Nature_TwistedTree_2 => "StylizedNature/glTF/TwistedTree_2.gltf#Scene0",
-            PropKind::Nature_TwistedTree_3 => "StylizedNature/glTF/TwistedTree_3.gltf#Scene0",
-            PropKind::Nature_TwistedTree_4 => "StylizedNature/glTF/TwistedTree_4.gltf#Scene0",
-            PropKind::Nature_TwistedTree_5 => "StylizedNature/glTF/TwistedTree_5.gltf#Scene0",
-            PropKind::Nature_CommonTree_1 => "StylizedNature/glTF/CommonTree_1.gltf#Scene0",
-            PropKind::Nature_CommonTree_2 => "StylizedNature/glTF/CommonTree_2.gltf#Scene0",
-            PropKind::Nature_CommonTree_3 => "StylizedNature/glTF/CommonTree_3.gltf#Scene0",
+            PropKind::Nature_TwistedTree_1 => "nature/forest/TwistedTree_1.gltf#Scene0",
+            PropKind::Nature_TwistedTree_2 => "nature/forest/TwistedTree_2.gltf#Scene0",
+            PropKind::Nature_TwistedTree_3 => "nature/forest/TwistedTree_3.gltf#Scene0",
+            PropKind::Nature_TwistedTree_4 => "nature/forest/TwistedTree_4.gltf#Scene0",
+            PropKind::Nature_TwistedTree_5 => "nature/forest/TwistedTree_5.gltf#Scene0",
+            PropKind::Nature_CommonTree_1 => "nature/forest/CommonTree_1.gltf#Scene0",
+            PropKind::Nature_CommonTree_2 => "nature/forest/CommonTree_2.gltf#Scene0",
+            PropKind::Nature_CommonTree_3 => "nature/forest/CommonTree_3.gltf#Scene0",
 
-            PropKind::Nature_Bush_Common => "StylizedNature/glTF/Bush_Common.gltf#Scene0",
-            PropKind::Nature_Bush_Common_Flowers => "StylizedNature/glTF/Bush_Common_Flowers.gltf#Scene0",
+            PropKind::Nature_Bush_Common => "nature/forest/Bush_Common.gltf#Scene0",
+            PropKind::Nature_Bush_Common_Flowers => "nature/forest/Bush_Common_Flowers.gltf#Scene0",
 
-            PropKind::Nature_Mushroom_Common => "StylizedNature/glTF/Mushroom_Common.gltf#Scene0",
-            PropKind::Nature_Mushroom_Laetiporus => "StylizedNature/glTF/Mushroom_Laetiporus.gltf#Scene0",
+            PropKind::Nature_Mushroom_Common => "nature/forest/Mushroom_Common.gltf#Scene0",
+            PropKind::Nature_Mushroom_Laetiporus => "nature/forest/Mushroom_Laetiporus.gltf#Scene0",
 
-            PropKind::Nature_Fern_1 => "StylizedNature/glTF/Fern_1.gltf#Scene0",
-            PropKind::Nature_Plant_1 => "StylizedNature/glTF/Plant_1.gltf#Scene0",
-            PropKind::Nature_Plant_1_Big => "StylizedNature/glTF/Plant_1_Big.gltf#Scene0",
-            PropKind::Nature_Plant_7 => "StylizedNature/glTF/Plant_7.gltf#Scene0",
+            PropKind::Nature_Fern_1 => "nature/forest/Fern_1.gltf#Scene0",
+            PropKind::Nature_Plant_1 => "nature/forest/Plant_1.gltf#Scene0",
+            PropKind::Nature_Plant_1_Big => "nature/forest/Plant_1_Big.gltf#Scene0",
+            PropKind::Nature_Plant_7 => "nature/forest/Plant_7.gltf#Scene0",
 
-            PropKind::Nature_Flower_3_Group => "StylizedNature/glTF/Flower_3_Group.gltf#Scene0",
-            PropKind::Nature_Flower_4_Group => "StylizedNature/glTF/Flower_4_Group.gltf#Scene0",
-            PropKind::Nature_Clover_1 => "StylizedNature/glTF/Clover_1.gltf#Scene0",
-            PropKind::Nature_Clover_2 => "StylizedNature/glTF/Clover_2.gltf#Scene0",
+            PropKind::Nature_Flower_3_Group => "nature/forest/Flower_3_Group.gltf#Scene0",
+            PropKind::Nature_Flower_4_Group => "nature/forest/Flower_4_Group.gltf#Scene0",
+            PropKind::Nature_Clover_1 => "nature/forest/Clover_1.gltf#Scene0",
+            PropKind::Nature_Clover_2 => "nature/forest/Clover_2.gltf#Scene0",
 
-            PropKind::Nature_Rock_Medium_1 => "StylizedNature/glTF/Rock_Medium_1.gltf#Scene0",
-            PropKind::Nature_Rock_Medium_2 => "StylizedNature/glTF/Rock_Medium_2.gltf#Scene0",
-            PropKind::Nature_Rock_Medium_3 => "StylizedNature/glTF/Rock_Medium_3.gltf#Scene0",
-            PropKind::Nature_Pebble_Round_1 => "StylizedNature/glTF/Pebble_Round_1.gltf#Scene0",
-            PropKind::Nature_Pebble_Round_2 => "StylizedNature/glTF/Pebble_Round_2.gltf#Scene0",
+            PropKind::Nature_Rock_Medium_1 => "nature/forest/Rock_Medium_1.gltf#Scene0",
+            PropKind::Nature_Rock_Medium_2 => "nature/forest/Rock_Medium_2.gltf#Scene0",
+            PropKind::Nature_Rock_Medium_3 => "nature/forest/Rock_Medium_3.gltf#Scene0",
+            PropKind::Nature_Pebble_Round_1 => "nature/forest/Pebble_Round_1.gltf#Scene0",
+            PropKind::Nature_Pebble_Round_2 => "nature/forest/Pebble_Round_2.gltf#Scene0",
 
-            PropKind::Nature_Grass_Common_Short => "StylizedNature/glTF/Grass_Common_Short.gltf#Scene0",
-            PropKind::Nature_Grass_Common_Tall => "StylizedNature/glTF/Grass_Common_Tall.gltf#Scene0",
-            PropKind::Nature_Grass_Wispy_Short => "StylizedNature/glTF/Grass_Wispy_Short.gltf#Scene0",
-            PropKind::Nature_Grass_Wispy_Tall => "StylizedNature/glTF/Grass_Wispy_Tall.gltf#Scene0",
+            PropKind::Nature_Grass_Common_Short => "nature/forest/Grass_Common_Short.gltf#Scene0",
+            PropKind::Nature_Grass_Common_Tall => "nature/forest/Grass_Common_Tall.gltf#Scene0",
+            PropKind::Nature_Grass_Wispy_Short => "nature/forest/Grass_Wispy_Short.gltf#Scene0",
+            PropKind::Nature_Grass_Wispy_Tall => "nature/forest/Grass_Wispy_Tall.gltf#Scene0",
         }
     }
 }

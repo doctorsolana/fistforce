@@ -21,8 +21,18 @@ use crate::input::{CameraMode, InputState};
 pub struct RangerCharacterAssets {
     pub ranger_scene: Handle<Scene>,
     pub animation_graph: Handle<AnimationGraph>,
+    // Movement animations
     pub idle_node: AnimationNodeIndex,
     pub walk_node: AnimationNodeIndex,
+    pub run_node: AnimationNodeIndex,
+    pub walk_back_node: AnimationNodeIndex,
+    pub strafe_left_node: AnimationNodeIndex,
+    pub strafe_right_node: AnimationNodeIndex,
+    // Jump animations
+    pub jump_start_node: AnimationNodeIndex,
+    pub jump_air_node: AnimationNodeIndex,
+    pub jump_land_node: AnimationNodeIndex,
+    // Death
     pub death_node: AnimationNodeIndex,
 }
 
@@ -42,13 +52,59 @@ pub struct RangerAnimationRoot;
 #[derive(Component, Clone, Copy)]
 pub struct RangerRigOwner(pub Entity);
 
-/// Tracks player animation state
+/// Movement animation types
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum MovementAnim {
+    #[default]
+    Idle,
+    Walk,
+    Run,
+    WalkBack,
+    StrafeLeft,
+    StrafeRight,
+    // Jump animations
+    JumpStart,
+    JumpAir,
+    JumpLand,
+}
+
+/// Duration for crossfade blending between animations
+const ANIM_BLEND_DURATION: f32 = 0.2;
+
+/// Duration of jump start animation before transitioning to air
+const JUMP_START_DURATION: f32 = 0.25;
+/// Duration of land animation before returning to ground movement
+const JUMP_LAND_DURATION: f32 = 0.2;
+/// Vertical velocity threshold to detect landing (units/sec)
+const LANDING_VELOCITY_THRESHOLD: f32 = 0.5;
+/// Minimum airborne time before allowing landing detection
+const MIN_AIRBORNE_TIME: f32 = 0.15;
+
+/// Tracks player animation state with blending support
 #[derive(Component, Default)]
 pub struct RangerAnimState {
-    pub walking: bool,
+    /// Currently playing animation
+    pub current_anim: MovementAnim,
+    /// Target animation (for blending)
+    pub target_anim: MovementAnim,
+    /// Blend progress (0.0 = current, 1.0 = target)
+    pub blend_progress: f32,
+    /// Is dead (death animation playing)
     pub dead: bool,
+    /// Has been initialized (for motion detection)
     pub initialized: bool,
+    /// Last position (for motion-based animation detection)
     pub last_pos: Vec3,
+    /// Last Y position (for vertical velocity detection)
+    pub last_y: f32,
+    /// Whether player is currently airborne
+    pub airborne: bool,
+    /// Timer for jump sequence phases (start -> air, land -> ground)
+    pub jump_timer: f32,
+    /// Was jump input pressed last frame (for edge detection)
+    pub jump_pressed_last: bool,
+    /// Smoothed horizontal speed (for stable remote player animations)
+    pub smoothed_speed: f32,
 }
 
 /// Marker for the local player's model (used for visibility toggling)
@@ -140,7 +196,7 @@ pub fn ensure_local_player_tag(
     }
 }
 
-/// Load the KayKit Ranger model + basic Idle/Walk animations and build an `AnimationGraph`.
+/// Load the KayKit Ranger model + movement animations and build an `AnimationGraph`.
 ///
 /// Notes:
 /// - The character model (`Ranger.glb`) has a rig/skin but **no animations**.
@@ -154,37 +210,81 @@ pub fn setup_player_character_assets(
 ) {
     // Ranger model (mesh + skin)
     let ranger_scene: Handle<Scene> = asset_server
-        .load("KayKit_Adventurers_2.0_FREE/Characters/gltf/Ranger.glb#Scene0");
+        .load("characters/adventurers/Ranger.glb#Scene0");
 
-    // Animations (rig clips)
-    // From `Rig_Medium_General.glb`: Idle_A is Animation6, Death_A is Animation0
+    // Movement animations from MovementBasic.glb
+    // Idle_A = #6 (General), Walking_A = #8, Running_A = #5
     let idle_clip: Handle<AnimationClip> = asset_server.load(
-        "KayKit_Adventurers_2.0_FREE/Animations/gltf/Rig_Medium/Rig_Medium_General.glb#Animation6",
+        "characters/animations/Rig_Medium_General.glb#Animation6",
     );
-    let death_clip: Handle<AnimationClip> = asset_server.load(
-        "KayKit_Adventurers_2.0_FREE/Animations/gltf/Rig_Medium/Rig_Medium_General.glb#Animation0",
-    );
-    // From `Rig_Medium_MovementBasic.glb`: Walking_A is Animation8
     let walk_clip: Handle<AnimationClip> = asset_server.load(
-        "KayKit_Adventurers_2.0_FREE/Animations/gltf/Rig_Medium/Rig_Medium_MovementBasic.glb#Animation8",
+        "characters/animations/Rig_Medium_MovementBasic.glb#Animation8",
+    );
+    let run_clip: Handle<AnimationClip> = asset_server.load(
+        "characters/animations/Rig_Medium_MovementBasic.glb#Animation5",
     );
 
-    // Build a graph with Idle + Walk + Death
-    let (graph, nodes) = AnimationGraph::from_clips([idle_clip, walk_clip, death_clip]);
+    // Advanced movement from MovementAdvanced.glb
+    // Walking_Backwards = #12, Running_Strafe_Left = #8, Running_Strafe_Right = #9
+    let walk_back_clip: Handle<AnimationClip> = asset_server.load(
+        "characters/animations/Rig_Medium_MovementAdvanced.glb#Animation12",
+    );
+    let strafe_left_clip: Handle<AnimationClip> = asset_server.load(
+        "characters/animations/Rig_Medium_MovementAdvanced.glb#Animation8",
+    );
+    let strafe_right_clip: Handle<AnimationClip> = asset_server.load(
+        "characters/animations/Rig_Medium_MovementAdvanced.glb#Animation9",
+    );
+
+    // Jump animations from MovementBasic.glb
+    // Jump_Start = #4, Jump_Idle (air) = #2, Jump_Land = #3
+    let jump_start_clip: Handle<AnimationClip> = asset_server.load(
+        "characters/animations/Rig_Medium_MovementBasic.glb#Animation4",
+    );
+    let jump_air_clip: Handle<AnimationClip> = asset_server.load(
+        "characters/animations/Rig_Medium_MovementBasic.glb#Animation2",
+    );
+    let jump_land_clip: Handle<AnimationClip> = asset_server.load(
+        "characters/animations/Rig_Medium_MovementBasic.glb#Animation3",
+    );
+
+    // Death animation
+    let death_clip: Handle<AnimationClip> = asset_server.load(
+        "characters/animations/Rig_Medium_General.glb#Animation0",
+    );
+
+    // Build graph with all movement animations + jump + death
+    // Order: idle, walk, run, walk_back, strafe_left, strafe_right, jump_start, jump_air, jump_land, death
+    let (graph, nodes) = AnimationGraph::from_clips([
+        idle_clip,
+        walk_clip,
+        run_clip,
+        walk_back_clip,
+        strafe_left_clip,
+        strafe_right_clip,
+        jump_start_clip,
+        jump_air_clip,
+        jump_land_clip,
+        death_clip,
+    ]);
     let animation_graph = animation_graphs.add(graph);
-    let idle_node = nodes[0];
-    let walk_node = nodes[1];
-    let death_node = nodes[2];
 
     commands.insert_resource(RangerCharacterAssets {
         ranger_scene,
         animation_graph,
-        idle_node,
-        walk_node,
-        death_node,
+        idle_node: nodes[0],
+        walk_node: nodes[1],
+        run_node: nodes[2],
+        walk_back_node: nodes[3],
+        strafe_left_node: nodes[4],
+        strafe_right_node: nodes[5],
+        jump_start_node: nodes[6],
+        jump_air_node: nodes[7],
+        jump_land_node: nodes[8],
+        death_node: nodes[9],
     });
 
-    info!("Loaded KayKit Ranger character assets (model + idle/walk anim clips)");
+    info!("Loaded KayKit Ranger character assets (model + 10 animation clips)");
 }
 
 // =============================================================================
@@ -333,9 +433,73 @@ pub fn setup_ranger_rig(
     }
 }
 
-/// Drive the Ranger animations:
-/// - Everyone plays Idle by default
-/// - The *local* player switches to Walk when WASD is pressed (and not in vehicle)
+/// Helper to get the animation node for a movement animation
+fn movement_anim_to_node(anim: MovementAnim, assets: &RangerCharacterAssets) -> AnimationNodeIndex {
+    match anim {
+        MovementAnim::Idle => assets.idle_node,
+        MovementAnim::Walk => assets.walk_node,
+        MovementAnim::Run => assets.run_node,
+        MovementAnim::WalkBack => assets.walk_back_node,
+        MovementAnim::StrafeLeft => assets.strafe_left_node,
+        MovementAnim::StrafeRight => assets.strafe_right_node,
+        MovementAnim::JumpStart => assets.jump_start_node,
+        MovementAnim::JumpAir => assets.jump_air_node,
+        MovementAnim::JumpLand => assets.jump_land_node,
+    }
+}
+
+/// Check if an animation is a jump animation (needs special sequencing)
+fn is_jump_anim(anim: MovementAnim) -> bool {
+    matches!(anim, MovementAnim::JumpStart | MovementAnim::JumpAir | MovementAnim::JumpLand)
+}
+
+/// Determine target animation based on input state (for local player)
+fn determine_local_target_anim(input: &crate::input::InputState) -> MovementAnim {
+    if input.in_vehicle {
+        return MovementAnim::Idle;
+    }
+
+    let sprinting = input.shift; // Shift key for sprinting
+    let forward = input.forward;
+    let backward = input.backward;
+    let left = input.left;
+    let right = input.right;
+
+    // Priority: forward/backward movement over pure strafing
+    match (forward, backward, left, right) {
+        // Forward movement (with or without diagonal)
+        (true, false, _, _) => {
+            if sprinting { MovementAnim::Run } else { MovementAnim::Walk }
+        }
+        // Pure backward movement
+        (false, true, false, false) => MovementAnim::WalkBack,
+        // Backward with strafe - still use walk back
+        (false, true, _, _) => MovementAnim::WalkBack,
+        // Pure strafe left
+        (false, false, true, false) => MovementAnim::StrafeLeft,
+        // Pure strafe right
+        (false, false, false, true) => MovementAnim::StrafeRight,
+        // No movement
+        _ => MovementAnim::Idle,
+    }
+}
+
+/// Determine target animation based on movement speed (for remote players)
+fn determine_remote_target_anim(speed_xz: f32) -> MovementAnim {
+    if speed_xz > 4.5 {
+        MovementAnim::Run
+    } else if speed_xz > 0.15 {
+        MovementAnim::Walk
+    } else {
+        MovementAnim::Idle
+    }
+}
+
+/// Drive the Ranger animations with directional movement, jumping, and smooth blending:
+/// - Local player: animation based on WASD input direction, sprint, and jump states
+/// - Remote players: animation based on movement speed and vertical velocity
+/// - Jump sequence: JumpStart -> JumpAir (loop) -> JumpLand -> ground movement
+/// - Crossfade blending between animation states over 0.2 seconds
 /// - Dead players play death animation
 pub fn update_ranger_animation(
     ranger_assets: Option<Res<RangerCharacterAssets>>,
@@ -347,10 +511,6 @@ pub fn update_ranger_animation(
     player_transforms: Query<&Transform, With<Player>>,
 ) {
     let Some(ranger_assets) = ranger_assets else { return };
-
-    let local_is_moving =
-        !input_state.in_vehicle
-            && (input_state.forward || input_state.backward || input_state.left || input_state.right);
     let dt = time.delta_secs().max(1e-6);
 
     for (owner, mut state, mut player) in anim_roots.iter_mut() {
@@ -359,65 +519,231 @@ pub fn update_ranger_animation(
             .get(owner.0)
             .map(|h| h.is_dead())
             .unwrap_or(false);
-        
+
         // Handle death animation
         if is_dead && !state.dead {
             player.stop_all();
             player.start(ranger_assets.death_node);
             state.dead = true;
-            state.walking = false;
+            state.airborne = false;
+            state.current_anim = MovementAnim::Idle;
+            state.target_anim = MovementAnim::Idle;
+            state.blend_progress = 1.0;
             continue;
         }
-        
+
         // If dead, keep death animation (don't switch back)
         if state.dead {
             // Check if player respawned (health restored)
             if !is_dead {
                 state.dead = false;
+                state.airborne = false;
                 player.stop_all();
                 player.start(ranger_assets.idle_node).repeat();
+                state.current_anim = MovementAnim::Idle;
+                state.target_anim = MovementAnim::Idle;
+                state.blend_progress = 1.0;
             }
             continue;
         }
-        
-        // Walk animation: local uses input state; remote uses movement speed.
-        let is_local = local_players.contains(owner.0);
-        let should_walk = if is_local {
-            local_is_moving
-        } else if let Ok(transform) = player_transforms.get(owner.0) {
-            // Motion-based walking detection for remote players.
+
+        // Get current position and compute velocities
+        let (vert_velocity, speed_xz) = if let Ok(transform) = player_transforms.get(owner.0) {
             let pos = transform.translation;
-            let mut speed_xz = 0.0;
             if state.initialized {
-                let d = pos - state.last_pos;
-                speed_xz = Vec2::new(d.x, d.z).length() / dt;
+                let delta = pos - state.last_pos;
+                let vy = delta.y / dt;
+                let raw_speed_xz = Vec2::new(delta.x, delta.z).length() / dt;
+
+                // Smooth the horizontal speed for stable animation selection
+                let smooth_rate = 8.0;
+                state.smoothed_speed += (raw_speed_xz - state.smoothed_speed) * (1.0 - (-smooth_rate * dt).exp());
+
+                state.last_pos = pos;
+                state.last_y = pos.y;
+                (vy, state.smoothed_speed)
             } else {
                 state.initialized = true;
+                state.last_pos = pos;
+                state.last_y = pos.y;
+                state.smoothed_speed = 0.0;
+                (0.0, 0.0)
             }
-            state.last_pos = pos;
-            speed_xz > 0.15
         } else {
-            false
+            (0.0, state.smoothed_speed)
         };
 
-        if should_walk && !state.walking {
-            player.stop(ranger_assets.idle_node);
-            player.start(ranger_assets.walk_node).repeat();
-            state.walking = true;
-        } else if !should_walk && state.walking {
-            player.stop(ranger_assets.walk_node);
-            player.start(ranger_assets.idle_node).repeat();
-            state.walking = false;
-        } else {
-            // Ensure something is playing (important on first frame after rig setup).
-            if state.walking {
-                if !player.is_playing_animation(ranger_assets.walk_node) {
-                    player.start(ranger_assets.walk_node).repeat();
+        let is_local = local_players.contains(owner.0);
+
+        // Detect jump initiation (edge detection)
+        let jump_just_pressed = is_local && input_state.jump && !state.jump_pressed_last;
+        state.jump_pressed_last = input_state.jump;
+
+        // Update jump timer
+        state.jump_timer += dt;
+
+        // Determine target animation with jump handling
+        let target_anim = determine_target_anim_with_jump(
+            &mut state,
+            is_local,
+            &input_state,
+            vert_velocity,
+            speed_xz,
+            jump_just_pressed,
+        );
+
+        // Check if we need to start a new transition
+        if target_anim != state.target_anim {
+            // If we were in the middle of a transition, snap to current target first
+            if state.blend_progress < 1.0 {
+                let old_current_node = movement_anim_to_node(state.current_anim, &ranger_assets);
+                player.stop(old_current_node);
+                state.current_anim = state.target_anim;
+            }
+
+            // Start new transition
+            state.target_anim = target_anim;
+            state.blend_progress = 0.0;
+
+            // Reset jump timer when entering a new jump phase
+            if is_jump_anim(target_anim) {
+                state.jump_timer = 0.0;
+            }
+
+            // Start target animation at weight 0
+            // Jump animations don't loop (except JumpAir)
+            let target_node = movement_anim_to_node(target_anim, &ranger_assets);
+            match target_anim {
+                MovementAnim::JumpStart | MovementAnim::JumpLand => {
+                    player.start(target_node).set_weight(0.0);
                 }
-            } else if !player.is_playing_animation(ranger_assets.idle_node) {
-                player.start(ranger_assets.idle_node).repeat();
+                MovementAnim::JumpAir => {
+                    player.start(target_node).repeat().set_weight(0.0);
+                }
+                _ => {
+                    player.start(target_node).repeat().set_weight(0.0);
+                }
             }
         }
+
+        // Update blend progress
+        if state.blend_progress < 1.0 {
+            state.blend_progress = (state.blend_progress + dt / ANIM_BLEND_DURATION).min(1.0);
+
+            let current_node = movement_anim_to_node(state.current_anim, &ranger_assets);
+            let target_node = movement_anim_to_node(state.target_anim, &ranger_assets);
+
+            // Apply weights for crossfade
+            let current_weight = 1.0 - state.blend_progress;
+            let target_weight = state.blend_progress;
+
+            if let Some(anim) = player.animation_mut(current_node) {
+                anim.set_weight(current_weight);
+            }
+            if let Some(anim) = player.animation_mut(target_node) {
+                anim.set_weight(target_weight);
+            }
+
+            // Transition complete - stop old animation
+            if state.blend_progress >= 1.0 {
+                player.stop(current_node);
+                state.current_anim = state.target_anim;
+            }
+        } else {
+            // Ensure current animation is playing (important on first frame after rig setup)
+            let current_node = movement_anim_to_node(state.current_anim, &ranger_assets);
+            if !player.is_playing_animation(current_node) {
+                match state.current_anim {
+                    MovementAnim::JumpStart | MovementAnim::JumpLand => {
+                        player.start(current_node);
+                    }
+                    _ => {
+                        player.start(current_node).repeat();
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Determine target animation with full jump sequence handling
+fn determine_target_anim_with_jump(
+    state: &mut RangerAnimState,
+    is_local: bool,
+    input_state: &crate::input::InputState,
+    vert_velocity: f32,
+    speed_xz: f32,
+    jump_just_pressed: bool,
+) -> MovementAnim {
+    // If in vehicle, always idle (no jumping in vehicles)
+    if is_local && input_state.in_vehicle {
+        state.airborne = false;
+        return MovementAnim::Idle;
+    }
+
+    // Handle jump state machine
+    // IMPORTANT: Check target_anim, not current_anim!
+    // During a blend transition, current_anim is the OLD animation we're coming FROM.
+    // target_anim is what we're transitioning TO, which represents our actual state.
+    match state.target_anim {
+        // Currently in JumpStart - wait for duration then go to JumpAir
+        MovementAnim::JumpStart => {
+            if state.jump_timer >= JUMP_START_DURATION {
+                state.airborne = true;
+                return MovementAnim::JumpAir;
+            }
+            return MovementAnim::JumpStart;
+        }
+
+        // Currently in JumpAir - wait for landing detection
+        MovementAnim::JumpAir => {
+            // Detect landing: vertical velocity near zero or positive after being negative,
+            // and we've been airborne for minimum time
+            if state.jump_timer >= MIN_AIRBORNE_TIME && vert_velocity.abs() < LANDING_VELOCITY_THRESHOLD {
+                return MovementAnim::JumpLand;
+            }
+            return MovementAnim::JumpAir;
+        }
+
+        // Currently in JumpLand - wait for duration then return to ground movement
+        MovementAnim::JumpLand => {
+            if state.jump_timer >= JUMP_LAND_DURATION {
+                state.airborne = false;
+                // Fall through to determine ground movement
+            } else {
+                return MovementAnim::JumpLand;
+            }
+        }
+
+        // Not in a jump animation - check if we should start one
+        _ => {
+            // Local player: start jump on input
+            if is_local && jump_just_pressed {
+                return MovementAnim::JumpStart;
+            }
+
+            // Remote player: detect airborne state via vertical velocity
+            if !is_local {
+                // If significantly rising, they're jumping
+                if vert_velocity > 2.0 {
+                    state.airborne = true;
+                    return MovementAnim::JumpAir;
+                }
+                // If airborne and now landing
+                if state.airborne && vert_velocity.abs() < LANDING_VELOCITY_THRESHOLD {
+                    state.airborne = false;
+                    // Skip land animation for remote players (too brief to look good)
+                }
+            }
+        }
+    }
+
+    // Ground movement animation
+    if is_local {
+        determine_local_target_anim(input_state)
+    } else {
+        // Motion-based animation for remote players using smoothed speed
+        determine_remote_target_anim(speed_xz)
     }
 }
 

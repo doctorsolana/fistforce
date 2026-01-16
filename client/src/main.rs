@@ -7,6 +7,7 @@ mod build_mode;
 mod camera;
 mod chest;
 mod crosshair;
+mod dialogue;
 mod input;
 mod pickup;
 mod props;
@@ -115,6 +116,7 @@ fn main() {
     app.add_plugins(ui::MainMenuPlugin);
     app.add_plugins(ui::PauseMenuPlugin);
     app.add_plugins(ui::InventoryPlugin);
+    app.add_plugins(ui::NameEntryPlugin);
     
     // Pickup plugin (item pickups with E key)
     app.add_plugins(pickup::PickupPlugin);
@@ -127,6 +129,9 @@ fn main() {
     
     // Audio plugin
     app.add_plugins(audio::GameAudioPlugin);
+
+    // NPC Dialogue plugin
+    app.add_plugins(dialogue::DialoguePlugin);
 
     // Setup systems (run once at startup - rendering only)
     app.add_systems(Startup, (

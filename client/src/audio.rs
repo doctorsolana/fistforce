@@ -7,7 +7,7 @@ use bevy::prelude::*;
 use bevy::audio::{SpatialAudioSink, Volume};
 
 use shared::{
-    terrain::Biome, LocalPlayer, Npc, Player, PlayerPosition, WorldTerrain, Vehicle, VehicleDriver,
+    terrain::Biome, LocalPlayer, Npc, NpcArchetype, Player, PlayerPosition, WorldTerrain, Vehicle, VehicleDriver,
     VehicleState,
 };
 use shared::{AudioEvent, AudioEventKind};
@@ -69,6 +69,72 @@ pub struct AudioState {
 /// Marker for remote player spatial audio (gunshots, etc.)
 #[derive(Component)]
 pub struct RemoteSpatialSound;
+
+// =============================================================================
+// AUDIO MANAGER (limits and prioritization)
+// =============================================================================
+
+/// Priority levels for audio - higher value = higher priority (less likely to be dropped)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum AudioPriority {
+    /// Remote footsteps - lowest priority, drop first
+    Ambient = 0,
+    /// Remote vehicle engines
+    VehicleRemote = 1,
+    /// Remote gunshots
+    CombatRemote = 2,
+    /// NPC dialogue
+    Dialogue = 3,
+    /// Local vehicle sounds
+    VehicleLocal = 4,
+    /// Local weapon sounds - highest priority, never dropped
+    CombatLocal = 5,
+}
+
+/// Marker component for audio entities managed by AudioManager
+#[derive(Component)]
+pub struct ManagedAudioTag {
+    pub priority: AudioPriority,
+    pub spawn_time: f32,
+}
+
+/// A queued dialogue request (NPC wants to speak)
+#[derive(Debug, Clone)]
+pub struct DialogueRequest {
+    pub npc_entity: Entity,
+    pub distance_sq: f32,
+    pub archetype: NpcArchetype,
+}
+
+/// Central audio manager - tracks limits and queues
+#[derive(Resource)]
+pub struct AudioManager {
+    /// Hard cap on all managed audio entities
+    pub max_total: usize,
+    /// Max concurrent dialogue sounds
+    pub max_dialogue: usize,
+    /// Max remote gunshot sounds
+    pub max_remote_combat: usize,
+    /// Max remote footstep emitters
+    pub max_remote_footsteps: usize,
+    /// Max remote vehicle audio pairs (each vehicle = 2 emitters)
+    pub max_remote_vehicles: usize,
+    /// Queued dialogue requests for this frame
+    pub dialogue_queue: Vec<DialogueRequest>,
+}
+
+impl Default for AudioManager {
+    fn default() -> Self {
+        Self {
+            max_total: 32,
+            max_dialogue: 4,
+            max_remote_combat: 8,
+            max_remote_footsteps: 12,
+            max_remote_vehicles: 6,
+            dialogue_queue: Vec::with_capacity(8),
+        }
+    }
+}
 
 // =============================================================================
 // REMOTE FOOTSTEPS (PLAYERS + NPCS)
@@ -243,27 +309,41 @@ pub fn play_gunshot_sfx(
 }
 
 /// Handle audio events from remote players (spatial audio)
-/// 
+///
 /// When other players shoot, we receive an AudioEvent from the server
 /// and play a spatial sound at their position.
+/// Respects max_remote_combat limit by despawning oldest sounds when at capacity.
 pub fn handle_remote_audio_events(
     mut commands: Commands,
+    time: Res<Time>,
     audio: Option<Res<GameAudio>>,
     audio_state: Res<AudioState>,
+    audio_manager: Res<AudioManager>,
+    camera: Query<&Transform, With<Camera3d>>,
     // Get our local player ID to skip our own sounds (we already play them locally)
     local_player: Query<&LocalId, (With<crate::GameClient>, With<Connected>)>,
     // Receive network messages
     mut receiver: Query<&mut MessageReceiver<AudioEvent>, (With<crate::GameClient>, With<Connected>)>,
+    // Query existing remote combat sounds to enforce limit
+    remote_sounds: Query<(Entity, &ManagedAudioTag, &Transform), With<RemoteSpatialSound>>,
 ) {
     // Don't process until audio assets are ready
     if !audio_state.assets_ready {
         return;
     }
     let Some(audio) = audio else { return };
-    
+    let Ok(cam) = camera.single() else { return };
+    let listener_pos = cam.translation;
+    let now = time.elapsed_secs();
+
     // Get our peer ID to skip our own sounds
     let our_id = local_player.iter().next().map(|id| peer_id_to_u64(id.0));
-    
+
+    // Count current remote combat sounds
+    let mut current_remote_count = remote_sounds.iter()
+        .filter(|(_, tag, _)| tag.priority == AudioPriority::CombatRemote)
+        .count();
+
     // Process incoming audio events
     for mut recv in receiver.iter_mut() {
         for audio_event in recv.receive() {
@@ -271,15 +351,36 @@ pub fn handle_remote_audio_events(
             if Some(audio_event.player_id) == our_id {
                 continue;
             }
-            
+
             match audio_event.kind {
                 AudioEventKind::Gunshot { weapon_type: _ } => {
+                    // Check limit and despawn oldest if needed
+                    if current_remote_count >= audio_manager.max_remote_combat {
+                        // Find and despawn the oldest/farthest remote combat sound
+                        if let Some((oldest_entity, _, _)) = remote_sounds.iter()
+                            .filter(|(_, tag, _)| tag.priority == AudioPriority::CombatRemote)
+                            .min_by(|(_, a_tag, a_tf), (_, b_tag, b_tf)| {
+                                // Prefer despawning older sounds, then farther ones
+                                let a_score = a_tag.spawn_time - a_tf.translation.distance_squared(listener_pos) * 0.001;
+                                let b_score = b_tag.spawn_time - b_tf.translation.distance_squared(listener_pos) * 0.001;
+                                a_score.partial_cmp(&b_score).unwrap_or(std::cmp::Ordering::Equal)
+                            })
+                        {
+                            commands.entity(oldest_entity).despawn();
+                            current_remote_count = current_remote_count.saturating_sub(1);
+                        }
+                    }
+
                     // Random pitch variation for variety (±5%)
                     let pitch = 0.95 + rand::random::<f32>() * 0.1;
-                    
-                    // Spawn spatial audio at the shooter's position
+
+                    // Spawn spatial audio at the shooter's position with ManagedAudioTag
                     commands.spawn((
                         RemoteSpatialSound,
+                        ManagedAudioTag {
+                            priority: AudioPriority::CombatRemote,
+                            spawn_time: now,
+                        },
                         AudioPlayer::new(audio.gun_shot.clone()),
                         PlaybackSettings::DESPAWN
                             .with_volume(Volume::Linear(0.8))
@@ -287,6 +388,7 @@ pub fn handle_remote_audio_events(
                             .with_spatial(true),
                         Transform::from_translation(audio_event.position),
                     ));
+                    current_remote_count += 1;
                 }
             }
         }
@@ -298,10 +400,13 @@ pub fn handle_remote_audio_events(
 /// Perf notes:
 /// - No network traffic: we infer movement from replicated transforms.
 /// - We only spawn emitters within a distance threshold.
+/// - Respects max_remote_footsteps limit, prioritizing closest entities.
 pub fn ensure_remote_footstep_emitters(
     mut commands: Commands,
+    time: Res<Time>,
     audio: Option<Res<GameAudio>>,
     audio_state: Res<AudioState>,
+    audio_manager: Res<AudioManager>,
     camera: Query<&Transform, With<Camera3d>>,
     // Remote players only (local player has their own loop)
     players: Query<(Entity, &Player, &Transform), (With<Player>, Without<LocalPlayer>)>,
@@ -318,6 +423,7 @@ pub fn ensure_remote_footstep_emitters(
 
     let Ok(cam) = camera.single() else { return };
     let listener_pos = cam.translation;
+    let now = time.elapsed_secs();
 
     // Gather driver IDs so we can skip footsteps for players that are driving.
     let mut driving_ids: HashSet<u64> = HashSet::new();
@@ -328,40 +434,30 @@ pub fn ensure_remote_footstep_emitters(
     }
 
     // Existing emitters -> targets.
-    let mut has_emitter: HashSet<Entity> = HashSet::new();
-    for e in existing.iter() {
-        has_emitter.insert(e.target);
+    let has_emitter: HashSet<Entity> = existing.iter().map(|e| e.target).collect();
+    let current_count = has_emitter.len();
+
+    // Check if we're at the limit
+    if current_count >= audio_manager.max_remote_footsteps {
+        return;
     }
+    let available_slots = audio_manager.max_remote_footsteps - current_count;
+
+    // Collect candidates with distances (entity, position, distance_squared)
+    let mut candidates: Vec<(Entity, Vec3, f32)> = Vec::new();
+    let max_dist_sq = REMOTE_FOOTSTEP_MAX_SPAWN_DISTANCE * REMOTE_FOOTSTEP_MAX_SPAWN_DISTANCE;
 
     // Remote players.
     for (entity, player, transform) in players.iter() {
         let player_id = peer_id_to_u64(player.client_id);
-        if driving_ids.contains(&player_id) {
+        if driving_ids.contains(&player_id) || has_emitter.contains(&entity) {
             continue;
         }
 
-        if has_emitter.contains(&entity) {
-            continue;
+        let dist_sq = transform.translation.distance_squared(listener_pos);
+        if dist_sq <= max_dist_sq {
+            candidates.push((entity, transform.translation, dist_sq));
         }
-
-        if transform.translation.distance(listener_pos) > REMOTE_FOOTSTEP_MAX_SPAWN_DISTANCE {
-            continue;
-        }
-
-        commands.spawn((
-            RemoteFootstepEmitter { target: entity },
-            RemoteFootstepState {
-                last_pos: transform.translation,
-                playing: false,
-            },
-            AudioPlayer::new(audio.desert_ambient.clone()),
-            PlaybackSettings::LOOP
-                .paused()
-                .with_volume(Volume::Linear(REMOTE_FOOTSTEP_VOLUME))
-                .with_spatial(true),
-            Transform::from_translation(transform.translation),
-            GlobalTransform::default(),
-        ));
     }
 
     // NPCs.
@@ -370,22 +466,32 @@ pub fn ensure_remote_footstep_emitters(
             continue;
         }
 
-        if transform.translation.distance(listener_pos) > REMOTE_FOOTSTEP_MAX_SPAWN_DISTANCE {
-            continue;
+        let dist_sq = transform.translation.distance_squared(listener_pos);
+        if dist_sq <= max_dist_sq {
+            candidates.push((entity, transform.translation, dist_sq));
         }
+    }
 
+    // Sort by distance (closest first), spawn up to available_slots
+    candidates.sort_by(|a, b| a.2.partial_cmp(&b.2).unwrap_or(std::cmp::Ordering::Equal));
+
+    for (entity, pos, _dist_sq) in candidates.into_iter().take(available_slots) {
         commands.spawn((
             RemoteFootstepEmitter { target: entity },
             RemoteFootstepState {
-                last_pos: transform.translation,
+                last_pos: pos,
                 playing: false,
+            },
+            ManagedAudioTag {
+                priority: AudioPriority::Ambient,
+                spawn_time: now,
             },
             AudioPlayer::new(audio.desert_ambient.clone()),
             PlaybackSettings::LOOP
                 .paused()
                 .with_volume(Volume::Linear(REMOTE_FOOTSTEP_VOLUME))
                 .with_spatial(true),
-            Transform::from_translation(transform.translation),
+            Transform::from_translation(pos),
             GlobalTransform::default(),
         ));
     }
@@ -834,11 +940,69 @@ pub fn stop_vehicle_sounds(
     vehicle_audio_state.was_in_vehicle = false;
 }
 
+// =============================================================================
+// AUDIO LIMIT ENFORCEMENT
+// =============================================================================
+
+/// Enforce global audio limits by despawning lowest priority sounds when over limit
+pub fn enforce_audio_limits(
+    mut commands: Commands,
+    audio_manager: Res<AudioManager>,
+    camera: Query<&Transform, With<Camera3d>>,
+    managed_audio: Query<(Entity, &ManagedAudioTag, &Transform)>,
+) {
+    let Ok(cam) = camera.single() else { return };
+    let listener_pos = cam.translation;
+
+    // Collect all managed audio with their priority and distance
+    let mut audio_list: Vec<(Entity, AudioPriority, f32, f32)> = managed_audio
+        .iter()
+        .map(|(entity, tag, tf)| {
+            let dist_sq = tf.translation.distance_squared(listener_pos);
+            (entity, tag.priority, dist_sq, tag.spawn_time)
+        })
+        .collect();
+
+    let current_count = audio_list.len();
+    if current_count <= audio_manager.max_total {
+        return;
+    }
+
+    let excess = current_count - audio_manager.max_total;
+
+    // Sort by priority (ascending), then distance (descending), then age (oldest first)
+    // This puts lowest-priority, farthest, oldest sounds at the front for removal
+    audio_list.sort_by(|a, b| {
+        match a.1.cmp(&b.1) {
+            std::cmp::Ordering::Equal => {
+                // Same priority: farther sounds should be removed first
+                match b.2.partial_cmp(&a.2) {
+                    Some(std::cmp::Ordering::Equal) | None => {
+                        // Same distance: older sounds removed first
+                        a.3.partial_cmp(&b.3).unwrap_or(std::cmp::Ordering::Equal)
+                    }
+                    Some(ord) => ord,
+                }
+            }
+            ord => ord,
+        }
+    });
+
+    // Despawn the excess lowest-priority sounds
+    for (entity, priority, _dist, _time) in audio_list.into_iter().take(excess) {
+        commands.entity(entity).despawn();
+        trace!("Audio limit: despawned {:?} (priority {:?})", entity, priority);
+    }
+}
+
 /// Audio plugin for easy integration
 pub struct GameAudioPlugin;
 
 impl Plugin for GameAudioPlugin {
     fn build(&self, app: &mut App) {
+        // Audio limit manager
+        app.init_resource::<AudioManager>();
+
         app.add_systems(Startup, setup_audio);
         app.add_systems(
             OnExit(GameState::Playing),
@@ -892,6 +1056,15 @@ impl Plugin for GameAudioPlugin {
         app.add_systems(
             Update,
             update_vehicle_audio.run_if(in_state(GameState::Playing)),
+        );
+        // Audio limit enforcement (runs last to cull excess audio)
+        app.add_systems(
+            Update,
+            enforce_audio_limits
+                .run_if(in_state(GameState::Playing))
+                .after(ensure_remote_footstep_emitters)
+                .after(ensure_remote_vehicle_audio_emitters)
+                .after(handle_remote_audio_events),
         );
     }
 }

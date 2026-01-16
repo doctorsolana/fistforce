@@ -64,7 +64,10 @@ pub fn start_connection(
         // IMPORTANT: enable replication receive on this client.
         // Without this, the client will never receive `WorldTime` / `Player` / `Vehicle` / etc.
         ReplicationReceiver::default(),
-        // Client -> Server messages
+    )).id();
+
+    // Add Client -> Server message senders (split to avoid tuple size limit)
+    commands.entity(client_entity).insert((
         MessageSender::<shared::PlayerInput>::default(),
         MessageSender::<shared::ShootRequest>::default(),
         MessageSender::<shared::SwitchWeapon>::default(),
@@ -73,7 +76,9 @@ pub fn start_connection(
         MessageSender::<shared::DropRequest>::default(),
         MessageSender::<shared::SelectHotbarSlot>::default(),
         MessageSender::<shared::InventoryMoveRequest>::default(),
-    )).id();
+        // Player name submission
+        MessageSender::<shared::SubmitPlayerName>::default(),
+    ));
     
     // Chest messages (split to avoid tuple size limit)
     commands.entity(client_entity).insert((
@@ -88,6 +93,8 @@ pub fn start_connection(
         MessageReceiver::<shared::BulletImpact>::default(),
         MessageReceiver::<shared::DamageReceived>::default(),
         MessageReceiver::<shared::PlayerKilled>::default(),
+        // Name submission response
+        MessageReceiver::<shared::NameSubmissionResult>::default(),
     ));
     
     // Trigger the Connect event to actually initiate the connection
@@ -104,8 +111,8 @@ pub fn check_connection(
     new_disconnections: Query<Entity, (With<crate::GameClient>, Added<Disconnected>)>,
 ) {
     for _entity in new_connections.iter() {
-        info!("Connected to server!");
-        next_state.set(GameState::Playing);
+        info!("Connected to server! Awaiting name submission...");
+        next_state.set(GameState::Connected);
     }
 
     for _entity in new_disconnections.iter() {

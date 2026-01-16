@@ -8,6 +8,7 @@ pub enum GameState {
     #[default]
     MainMenu,
     Connecting,
+    Connected,  // Waiting for player name submission
     Playing,
     Paused,
 }

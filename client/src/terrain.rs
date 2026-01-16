@@ -11,12 +11,12 @@ use noise::{NoiseFn, Perlin, Fbm, MultiFractal};
 use std::collections::HashSet;
 
 use shared::{
-    ChunkCoord, LocalPlayer, PlayerPosition, WorldTerrain, VIEW_DISTANCE, WORLD_SEED,
+    ChunkCoord, LocalPlayer, PlayerPosition, WorldTerrain, WORLD_SEED,
     TerrainDeltaChunk,
 };
 
 use crate::states::GameState;
-use crate::systems::ClientWorldRoot;
+use crate::systems::{ClientWorldRoot, GraphicsSettings};
 
 /// Marker component for terrain chunk entities
 #[derive(Component)]
@@ -311,6 +311,7 @@ fn update_terrain_chunks(
     mut loaded_chunks: ResMut<LoadedChunks>,
     mut streaming: ResMut<TerrainStreamingState>,
     chunk_query: Query<(Entity, &TerrainChunk)>,
+    settings: Res<GraphicsSettings>,
     mut commands: Commands,
 ) {
     let Ok(player_pos) = player_query.single() else {
@@ -318,15 +319,17 @@ fn update_terrain_chunks(
     };
 
     let player_chunk = ChunkCoord::from_world_pos(player_pos.0);
+    let view_distance = settings.view_distance;
 
-    // Only recompute desired chunks when we cross into a new chunk.
-    if streaming.center == Some(player_chunk) {
+    // Recompute when player moves to new chunk OR when view distance setting changes
+    let should_recompute = streaming.center != Some(player_chunk) || settings.is_changed();
+    if !should_recompute {
         return;
     }
     streaming.center = Some(player_chunk);
 
     // Update desired chunk ordering (nearest -> farthest).
-    let mut desired: Vec<ChunkCoord> = player_chunk.chunks_in_radius(VIEW_DISTANCE);
+    let mut desired: Vec<ChunkCoord> = player_chunk.chunks_in_radius(view_distance);
     desired.sort_by_key(|c| {
         let dx = (c.x - player_chunk.x).abs();
         let dz = (c.z - player_chunk.z).abs();
@@ -341,7 +344,7 @@ fn update_terrain_chunks(
     for (entity, chunk) in chunk_query.iter() {
         let dx = (chunk.coord.x - player_chunk.x).abs();
         let dz = (chunk.coord.z - player_chunk.z).abs();
-        if dx > VIEW_DISTANCE || dz > VIEW_DISTANCE {
+        if dx > view_distance || dz > view_distance {
             to_remove.push((entity, chunk.coord));
         }
     }
@@ -357,6 +360,7 @@ fn spawn_terrain_chunks(
     mut loaded_chunks: ResMut<LoadedChunks>,
     streaming: Res<TerrainStreamingState>,
     terrain: Res<WorldTerrain>,
+    settings: Res<GraphicsSettings>,
     mut meshes: ResMut<Assets<Mesh>>,
     render_assets: Option<Res<TerrainRenderAssets>>,
     world_root_query: Query<Entity, With<ClientWorldRoot>>,
@@ -372,6 +376,8 @@ fn spawn_terrain_chunks(
 
     let Some(render_assets) = render_assets else { return };
 
+    let view_distance = settings.view_distance;
+
     // Load new chunks (limit per frame to avoid stutter)
     let mut chunks_spawned = 0;
     let max_chunks_per_frame = 2;
@@ -385,14 +391,14 @@ fn spawn_terrain_chunks(
             // Center mismatch (should be rare): compute locally.
             Box::new(
                 ChunkCoord::from_world_pos(player_pos.0)
-                    .chunks_in_radius(VIEW_DISTANCE)
+                    .chunks_in_radius(view_distance)
                     .into_iter(),
             )
         }
     } else {
         Box::new(
             ChunkCoord::from_world_pos(player_pos.0)
-                .chunks_in_radius(VIEW_DISTANCE)
+                .chunks_in_radius(view_distance)
                 .into_iter(),
         )
     };

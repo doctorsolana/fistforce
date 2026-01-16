@@ -70,11 +70,12 @@ pub fn update_camera(
         CameraMode::ThirdPerson => third_person_target(player_transform, vehicle_pose, &input_state),
     };
 
-    // When in first-person vehicle mode, SNAP directly to avoid lag at high speeds.
-    // The vehicle is already smoothed, so no additional interpolation needed.
-    let in_vehicle_first_person = vehicle_pose.is_some() && input_state.camera_mode == CameraMode::FirstPerson;
-    
-    if in_vehicle_first_person {
+    // When driving a vehicle, SNAP directly to avoid jitter at high speeds.
+    // The vehicle transform is already smoothed, so no additional interpolation needed.
+    // This applies to BOTH first-person and third-person vehicle modes.
+    let in_vehicle = vehicle_pose.is_some();
+
+    if in_vehicle {
         camera_transform.translation = target_pos;
         camera_transform.rotation = target_rot;
     } else {

@@ -294,7 +294,7 @@ pub fn send_input_to_server(
         input.vehicle_input = Some(VehicleInput {
             throttle: if input_state.forward { 1.0 } else { 0.0 },
             brake: if input_state.backward { 1.0 } else { 0.0 },
-            steer: if input_state.left { 1.0 } else if input_state.right { -1.0 } else { 0.0 },
+            steer: if input_state.left { -1.0 } else if input_state.right { 1.0 } else { 0.0 },
             air_control: input_state.shift, // Hold Shift for air tricks
         });
         input.forward = false;

@@ -132,9 +132,15 @@ fn start_bake(
     }
 
     // Build lookup of known PropKinds from shared.
-    let mut kind_lookup: HashMap<String, shared::PropKind> = HashMap::new();
+    let mut prop_lookup: HashMap<String, shared::PropKind> = HashMap::new();
     for k in shared::ALL_PROP_KINDS.iter().copied() {
-        kind_lookup.insert(k.id().to_string(), k);
+        prop_lookup.insert(k.id().to_string(), k);
+    }
+
+    // Build lookup of known BuildingTypes from shared.
+    let mut building_lookup: HashMap<String, shared::BuildingType> = HashMap::new();
+    for b in shared::ALL_BUILDING_TYPES.iter().copied() {
+        building_lookup.insert(b.id().to_string(), b);
     }
 
     let mut handles = HashMap::new();
@@ -143,20 +149,41 @@ fn start_bake(
             continue;
         }
 
-        let Some(pk) = kind_lookup.get(&entry.kind).copied() else {
-            panic!(
-                "Unknown kind '{}' in manifest. Expected one of shared::ALL_PROP_KINDS ids.",
-                entry.kind
-            );
+        // Check if this is a prop or building entry
+        let expected_path: Option<String> = if entry.kind.starts_with("building_") {
+            // Building entry
+            let Some(bt) = building_lookup.get(&entry.kind).copied() else {
+                panic!(
+                    "Unknown building kind '{}' in manifest. Expected one of shared::ALL_BUILDING_TYPES ids.",
+                    entry.kind
+                );
+            };
+            bt.scene_path().map(|s| s.to_string())
+        } else {
+            // Prop entry
+            let Some(pk) = prop_lookup.get(&entry.kind).copied() else {
+                panic!(
+                    "Unknown kind '{}' in manifest. Expected one of shared::ALL_PROP_KINDS ids.",
+                    entry.kind
+                );
+            };
+            Some(pk.scene_path().to_string())
         };
 
         // Sanity-check that the manifest path matches the canonical shared path.
-        if pk.scene_path() != entry.gltf_path {
+        if let Some(expected) = expected_path {
+            if expected != entry.gltf_path {
+                panic!(
+                    "Manifest path mismatch for kind '{}': manifest='{}' shared='{}'",
+                    entry.kind,
+                    entry.gltf_path,
+                    expected
+                );
+            }
+        } else {
             panic!(
-                "Manifest path mismatch for kind '{}': manifest='{}' shared='{}'",
-                entry.kind,
-                entry.gltf_path,
-                pk.scene_path()
+                "Building '{}' has no GLTF model path defined in shared",
+                entry.kind
             );
         }
 

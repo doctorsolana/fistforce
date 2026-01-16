@@ -23,6 +23,10 @@ pub struct GraphicsSettings {
     pub shadows_enabled: bool,
     pub atmosphere_enabled: bool,
     pub moonlight_enabled: bool,
+    /// View distance in chunks (1 chunk = 64m). Range: 2-16. Default: 6 (384m).
+    pub view_distance: i32,
+    /// Multiplier for prop render distance. Range: 0.25-4.0. Default: 1.0.
+    pub prop_render_multiplier: f32,
 }
 
 impl Default for GraphicsSettings {
@@ -32,6 +36,8 @@ impl Default for GraphicsSettings {
             shadows_enabled: true,
             atmosphere_enabled: true,
             moonlight_enabled: true,
+            view_distance: 6,
+            prop_render_multiplier: 1.0,
         }
     }
 }

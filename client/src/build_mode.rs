@@ -6,14 +6,22 @@
 use bevy::prelude::*;
 use bevy::mesh::{Indices, PrimitiveTopology};
 use lightyear::prelude::*;
+use std::collections::HashMap;
 
 use shared::{
     BuildingType, PlaceBuildingRequest, PlacedBuilding, BuildingPosition, Inventory,
-    WorldTerrain, LocalPlayer,
+    WorldTerrain, LocalPlayer, WeaponDebugMode, ALL_BUILDING_TYPES,
 };
 
 use crate::input::InputState;
 use crate::states::GameState;
+
+/// Client-side building collider data for debug visualization
+#[derive(Resource, Default)]
+pub struct BuildingColliderVisuals {
+    /// Convex hull edges for each building type (for debug drawing)
+    pub hull_edges: HashMap<BuildingType, Vec<(Vec3, Vec3)>>,
+}
 
 /// Plugin for the build mode system
 pub struct BuildModePlugin;
@@ -22,9 +30,10 @@ impl Plugin for BuildModePlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<BuildModeState>();
         app.init_resource::<BuildModeAssets>();
-        
-        app.add_systems(Startup, setup_build_mode_assets);
-        
+        app.init_resource::<BuildingColliderVisuals>();
+
+        app.add_systems(Startup, (setup_build_mode_assets, load_building_collider_visuals));
+
         app.add_systems(
             Update,
             (
@@ -37,10 +46,12 @@ impl Plugin for BuildModePlugin {
                 // Building rendering (always runs, not just in build mode)
                 spawn_building_visuals,
                 cleanup_building_visuals,
+                // Debug visualization for building colliders
+                debug_draw_building_colliders,
             )
                 .run_if(in_state(GameState::Playing)),
         );
-        
+
         app.add_systems(OnExit(GameState::Playing), cleanup_build_mode);
     }
 }
@@ -60,8 +71,12 @@ pub struct BuildModeState {
     pub can_place: bool,
     /// Reason why placement is invalid (for UI feedback)
     pub invalid_reason: Option<String>,
-    /// Entity for the ghost building preview mesh
+    /// Entity for the ghost building preview mesh (footprint box with green/red)
     pub ghost_entity: Option<Entity>,
+    /// Entity for the GLTF model preview (actual building model)
+    pub model_preview_entity: Option<Entity>,
+    /// Currently previewed building type (to detect changes)
+    pub previewed_building_type: Option<BuildingType>,
     /// Entity for the terrain flattening preview
     pub terrain_preview_entity: Option<Entity>,
     /// Mesh handle for the terrain preview (updated in-place to avoid asset churn)
@@ -78,8 +93,10 @@ pub struct BuildModeAssets {
     pub invalid_material: Handle<StandardMaterial>,
     /// Terrain preview material
     pub terrain_preview_material: Handle<StandardMaterial>,
-    /// Building meshes by type
+    /// Building meshes by type (fallback for buildings without models)
     pub building_meshes: std::collections::HashMap<BuildingType, Handle<Mesh>>,
+    /// Building GLTF scenes by type (for buildings with model_path)
+    pub building_scenes: std::collections::HashMap<BuildingType, Handle<Scene>>,
 }
 
 // UI styling constants
@@ -101,9 +118,13 @@ pub struct BuildingSelectButton {
     pub building_type: BuildingType,
 }
 
-/// Marker for the ghost preview entity
+/// Marker for the ghost preview entity (footprint box)
 #[derive(Component)]
 pub struct GhostPreview;
+
+/// Marker for the model preview entity (actual GLTF model)
+#[derive(Component)]
+pub struct ModelPreview;
 
 /// Marker for the terrain preview entity
 #[derive(Component)]
@@ -121,6 +142,7 @@ fn setup_build_mode_assets(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
+    asset_server: Res<AssetServer>,
 ) {
     let valid_material = materials.add(StandardMaterial {
         base_color: Color::srgba(0.2, 0.8, 0.2, 0.5),
@@ -128,14 +150,14 @@ fn setup_build_mode_assets(
         unlit: true,
         ..default()
     });
-    
+
     let invalid_material = materials.add(StandardMaterial {
         base_color: Color::srgba(0.8, 0.2, 0.2, 0.5),
         alpha_mode: AlphaMode::Blend,
         unlit: true,
         ..default()
     });
-    
+
     let terrain_preview_material = materials.add(StandardMaterial {
         base_color: Color::srgba(0.4, 0.6, 0.4, 0.4),
         alpha_mode: AlphaMode::Blend,
@@ -144,22 +166,116 @@ fn setup_build_mode_assets(
         cull_mode: None,
         ..default()
     });
-    
-    // Generate building meshes
+
+    // Generate building meshes (fallback) and load GLTF scenes
     let mut building_meshes = std::collections::HashMap::new();
-    
+    let mut building_scenes = std::collections::HashMap::new();
+
     for building_type in BuildingType::all() {
         let def = building_type.definition();
+
+        // Always generate fallback mesh
         let mesh = generate_building_mesh(&def);
         building_meshes.insert(*building_type, meshes.add(mesh));
+
+        // Load GLTF scene if available
+        if let Some(model_path) = def.model_path {
+            let scene: Handle<Scene> = asset_server.load(model_path);
+            building_scenes.insert(*building_type, scene);
+        }
     }
-    
+
     commands.insert_resource(BuildModeAssets {
         valid_material,
         invalid_material,
         terrain_preview_material,
         building_meshes,
+        building_scenes,
     });
+}
+
+/// Load baked building colliders for debug visualization
+fn load_building_collider_visuals(mut collider_visuals: ResMut<BuildingColliderVisuals>) {
+    let path = "client/assets/colliders.bin";
+    let Ok(db) = shared::load_baked_collider_db_from_file(path) else {
+        warn!("Failed to load colliders.bin for debug visualization");
+        return;
+    };
+
+    for building_type in ALL_BUILDING_TYPES.iter().copied() {
+        let Some(collider) = db.entries.get(building_type.id()) else {
+            continue;
+        };
+
+        match collider {
+            shared::BakedCollider::ConvexHull { points } => {
+                // Convert points to Vec3
+                let vertices: Vec<Vec3> = points
+                    .iter()
+                    .map(|p| Vec3::new(p[0], p[1], p[2]))
+                    .collect();
+
+                // Extract edges from the convex hull
+                // For a convex hull, we need to find which vertices are connected
+                // A simple approach: compute the hull faces and extract edges
+                let edges = extract_hull_edges(&vertices);
+                collider_visuals.hull_edges.insert(building_type, edges);
+            }
+        }
+    }
+
+    info!(
+        "Loaded {} building collider visuals for debug",
+        collider_visuals.hull_edges.len()
+    );
+}
+
+/// Extract bounding box edges from convex hull vertices
+/// Returns edges for a tight axis-aligned bounding box
+fn extract_hull_edges(vertices: &[Vec3]) -> Vec<(Vec3, Vec3)> {
+    if vertices.len() < 4 {
+        return Vec::new();
+    }
+
+    // Compute AABB from vertices
+    let mut min = Vec3::splat(f32::MAX);
+    let mut max = Vec3::splat(f32::MIN);
+
+    for v in vertices {
+        min = min.min(*v);
+        max = max.max(*v);
+    }
+
+    // Build box corners
+    let corners = [
+        Vec3::new(min.x, min.y, min.z),
+        Vec3::new(max.x, min.y, min.z),
+        Vec3::new(max.x, min.y, max.z),
+        Vec3::new(min.x, min.y, max.z),
+        Vec3::new(min.x, max.y, min.z),
+        Vec3::new(max.x, max.y, min.z),
+        Vec3::new(max.x, max.y, max.z),
+        Vec3::new(min.x, max.y, max.z),
+    ];
+
+    // 12 edges of a box
+    vec![
+        // Bottom face
+        (corners[0], corners[1]),
+        (corners[1], corners[2]),
+        (corners[2], corners[3]),
+        (corners[3], corners[0]),
+        // Top face
+        (corners[4], corners[5]),
+        (corners[5], corners[6]),
+        (corners[6], corners[7]),
+        (corners[7], corners[4]),
+        // Verticals
+        (corners[0], corners[4]),
+        (corners[1], corners[5]),
+        (corners[2], corners[6]),
+        (corners[3], corners[7]),
+    ]
 }
 
 /// Generate a simple box mesh for a building
@@ -547,34 +663,67 @@ fn update_placement_preview(
         build_state.invalid_reason = None;
     }
     
-    // Spawn or update ghost preview
+    // Spawn or update preview
     let rotation = Quat::from_rotation_y(build_state.preview_rotation);
     let material = if build_state.can_place {
         assets.valid_material.clone()
     } else {
         assets.invalid_material.clone()
     };
-    
+
+    // Check if building type changed - need to respawn model preview
+    let building_changed = build_state.previewed_building_type != Some(building_type);
+    if building_changed {
+        // Despawn old model preview
+        if let Some(old_entity) = build_state.model_preview_entity.take() {
+            commands.entity(old_entity).despawn();
+        }
+        build_state.previewed_building_type = Some(building_type);
+    }
+
+    // Spawn/update GLTF model preview for buildings with models
+    if let Some(scene) = assets.building_scenes.get(&building_type) {
+        if build_state.model_preview_entity.is_none() || building_changed {
+            let entity = commands.spawn((
+                ModelPreview,
+                SceneRoot(scene.clone()),
+                Transform::from_translation(position).with_rotation(rotation),
+            )).id();
+            build_state.model_preview_entity = Some(entity);
+        }
+    }
+
+    // Update model preview position if it exists
+    if let Some(entity) = build_state.model_preview_entity {
+        if let Ok(mut entity_commands) = commands.get_entity(entity) {
+            entity_commands.insert(Transform::from_translation(position).with_rotation(rotation));
+        }
+    }
+
+    // Spawn/update ghost (footprint box) - only show if no model, or as wireframe indicator
+    let has_model = assets.building_scenes.contains_key(&building_type);
     if let Some(mesh) = assets.building_meshes.get(&building_type) {
         if let Ok((mut transform, mut vis, mut mat)) = ghost_query.single_mut() {
             // Update existing ghost
             transform.translation = position;
             transform.rotation = rotation;
-            *vis = Visibility::Visible;
+            // Hide ghost if we have a model preview (the model is enough)
+            *vis = if has_model { Visibility::Hidden } else { Visibility::Visible };
             *mat = MeshMaterial3d(material);
         } else {
             // Spawn new ghost
             if let Some(old_entity) = build_state.ghost_entity {
                 commands.entity(old_entity).despawn();
             }
-            
+
             let entity = commands.spawn((
                 GhostPreview,
                 Mesh3d(mesh.clone()),
                 MeshMaterial3d(material),
                 Transform::from_translation(position).with_rotation(rotation),
+                if has_model { Visibility::Hidden } else { Visibility::Visible },
             )).id();
-            
+
             build_state.ghost_entity = Some(entity);
         }
     }
@@ -799,10 +948,14 @@ fn cleanup_build_mode_visuals(
     if let Some(entity) = build_state.ghost_entity.take() {
         commands.entity(entity).despawn();
     }
+    if let Some(entity) = build_state.model_preview_entity.take() {
+        commands.entity(entity).despawn();
+    }
     if let Some(entity) = build_state.terrain_preview_entity.take() {
         commands.entity(entity).despawn();
     }
     build_state.terrain_preview_mesh = None;
+    build_state.previewed_building_type = None;
     if let Some(entity) = build_state.ui_entity.take() {
         commands.entity(entity).despawn();
     }
@@ -822,36 +975,43 @@ fn spawn_building_visuals(
         if already_has_visual {
             continue;
         }
-        
+
         let def = building.building_type.definition();
-        
-        // Get the mesh for this building type
-        let Some(mesh) = assets.building_meshes.get(&building.building_type) else {
-            warn!("No mesh for building type {:?}", building.building_type);
-            continue;
-        };
-        
-        // Create a solid material for the building
-        let material = materials.add(StandardMaterial {
-            base_color: def.color,
-            perceptual_roughness: 0.8,
-            metallic: 0.0,
-            ..default()
-        });
-        
         let rotation = Quat::from_rotation_y(building.rotation);
-        
+
         info!(
             "Spawning visual for {:?} at {:?}",
             building.building_type, position.0
         );
-        
-        commands.spawn((
-            BuildingVisual { server_entity: entity },
-            Mesh3d(mesh.clone()),
-            MeshMaterial3d(material),
-            Transform::from_translation(position.0).with_rotation(rotation),
-        ));
+
+        // Prefer GLTF scene if available, otherwise use fallback mesh
+        if let Some(scene) = assets.building_scenes.get(&building.building_type) {
+            commands.spawn((
+                BuildingVisual { server_entity: entity },
+                SceneRoot(scene.clone()),
+                Transform::from_translation(position.0).with_rotation(rotation),
+            ));
+        } else {
+            // Fallback to generated mesh
+            let Some(mesh) = assets.building_meshes.get(&building.building_type) else {
+                warn!("No mesh for building type {:?}", building.building_type);
+                continue;
+            };
+
+            let material = materials.add(StandardMaterial {
+                base_color: def.color,
+                perceptual_roughness: 0.8,
+                metallic: 0.0,
+                ..default()
+            });
+
+            commands.spawn((
+                BuildingVisual { server_entity: entity },
+                Mesh3d(mesh.clone()),
+                MeshMaterial3d(material),
+                Transform::from_translation(position.0).with_rotation(rotation),
+            ));
+        }
     }
 }
 
@@ -875,6 +1035,7 @@ fn cleanup_build_mode(
     mut build_state: ResMut<BuildModeState>,
     ui_query: Query<Entity, With<BuildModeUI>>,
     ghost_query: Query<Entity, With<GhostPreview>>,
+    model_preview_query: Query<Entity, With<ModelPreview>>,
     terrain_preview_query: Query<Entity, With<TerrainPreview>>,
     building_visuals: Query<Entity, With<BuildingVisual>>,
 ) {
@@ -882,14 +1043,19 @@ fn cleanup_build_mode(
     build_state.selected_building = None;
     build_state.preview_position = None;
     build_state.ghost_entity = None;
+    build_state.model_preview_entity = None;
+    build_state.previewed_building_type = None;
     build_state.terrain_preview_entity = None;
     build_state.terrain_preview_mesh = None;
     build_state.ui_entity = None;
-    
+
     for entity in ui_query.iter() {
         commands.entity(entity).despawn();
     }
     for entity in ghost_query.iter() {
+        commands.entity(entity).despawn();
+    }
+    for entity in model_preview_query.iter() {
         commands.entity(entity).despawn();
     }
     for entity in terrain_preview_query.iter() {
@@ -897,5 +1063,78 @@ fn cleanup_build_mode(
     }
     for entity in building_visuals.iter() {
         commands.entity(entity).despawn();
+    }
+}
+
+/// Draw debug gizmos for building colliders (F4 to toggle)
+fn debug_draw_building_colliders(
+    mut gizmos: Gizmos,
+    debug_mode: Res<WeaponDebugMode>,
+    collider_visuals: Res<BuildingColliderVisuals>,
+    buildings: Query<(&PlacedBuilding, &BuildingPosition)>,
+) {
+    if !debug_mode.0 {
+        return;
+    }
+
+    let color = Color::srgb(0.2, 0.8, 1.0); // Cyan for buildings
+
+    for (building, position) in buildings.iter() {
+        let pos = position.0;
+        let rotation_quat = Quat::from_rotation_y(building.rotation);
+
+        // Check if we have baked hull edges for this building type
+        if let Some(edges) = collider_visuals.hull_edges.get(&building.building_type) {
+            // Draw the actual convex hull edges
+            for (v0, v1) in edges {
+                // Transform local-space edges to world space
+                let world_v0 = pos + rotation_quat * *v0;
+                let world_v1 = pos + rotation_quat * *v1;
+                gizmos.line(world_v0, world_v1, color);
+            }
+        } else {
+            // Fallback to box wireframe for buildings without baked colliders
+            let def = building.building_type.definition();
+            let rotation = building.rotation;
+
+            let hx = def.footprint.x * 0.5;
+            let hz = def.footprint.y * 0.5;
+
+            let cos_r = rotation.cos();
+            let sin_r = rotation.sin();
+
+            let rotate_xz = |x: f32, z: f32| -> (f32, f32) {
+                (x * cos_r - z * sin_r, x * sin_r + z * cos_r)
+            };
+
+            let local_corners = [
+                (-hx, 0.0, -hz),
+                (hx, 0.0, -hz),
+                (hx, 0.0, hz),
+                (-hx, 0.0, hz),
+            ];
+
+            let mut bottom = [Vec3::ZERO; 4];
+            let mut top = [Vec3::ZERO; 4];
+
+            for (i, (lx, _, lz)) in local_corners.iter().enumerate() {
+                let (rx, rz) = rotate_xz(*lx, *lz);
+                bottom[i] = pos + Vec3::new(rx, 0.0, rz);
+                top[i] = pos + Vec3::new(rx, def.height, rz);
+            }
+
+            for i in 0..4 {
+                gizmos.line(bottom[i], bottom[(i + 1) % 4], color);
+            }
+
+            for i in 0..4 {
+                gizmos.line(top[i], top[(i + 1) % 4], color);
+            }
+
+            // Draw verticals
+            for i in 0..4 {
+                gizmos.line(bottom[i], top[i], color);
+            }
+        }
     }
 }

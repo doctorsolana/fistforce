@@ -12,7 +12,7 @@ use shared::{
     Bullet, BulletPrevPosition, BulletVelocity, EquippedWeapon, Health,
     BulletImpact, BulletImpactSurface, HitConfirm, DamageReceived, PlayerKilled, ShootRequest, SwitchWeapon, ReloadRequest, ReliableChannel,
     AudioEvent, AudioEventKind,
-    npc_capsule_endpoints, npc_head_center, Npc, NpcPosition, NPC_HEAD_RADIUS, NPC_HEIGHT, NPC_RADIUS,
+    npc_capsule_endpoints, npc_head_center, Npc, NpcPosition, NpcDamageEvent, NPC_HEAD_RADIUS, NPC_HEIGHT, NPC_RADIUS,
     Player, PlayerPosition, WorldTerrain, FIXED_TIMESTEP_HZ, PLAYER_HEIGHT, PLAYER_RADIUS,
 };
 
@@ -454,6 +454,12 @@ pub fn detect_bullet_hits(
                 if let Ok((_e, _npc, _pos, mut health)) = npcs.get_mut(npc_entity) {
                     let is_kill = health.take_damage(hit.damage_amount);
                     let is_headshot = hit.hit_zone == damage::HitZone::Head;
+
+                    // Add damage event component so AI can react
+                    commands.entity(npc_entity).insert(NpcDamageEvent {
+                        damage_source_position: hit.bullet_spawn_position,
+                        damage_amount: hit.damage_amount,
+                    });
 
                     info!(
                         "Hit NPC! {:?} -> npc:{} ({:?}) for {:.1} damage (headshot: {}, kill: {})",

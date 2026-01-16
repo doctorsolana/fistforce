@@ -19,8 +19,14 @@ use shared::WeaponDebugMode;
 pub struct KayKitNpcAssets {
     pub scenes: std::collections::HashMap<NpcArchetype, Handle<Scene>>,
     pub animation_graph: Handle<AnimationGraph>,
+    // Movement animations
     pub idle_node: AnimationNodeIndex,
     pub walk_node: AnimationNodeIndex,
+    pub run_node: AnimationNodeIndex,
+    pub walk_back_node: AnimationNodeIndex,
+    pub strafe_left_node: AnimationNodeIndex,
+    pub strafe_right_node: AnimationNodeIndex,
+    // Death
     pub death_node: AnimationNodeIndex,
 }
 
@@ -32,7 +38,7 @@ pub fn setup_npc_assets(
     let mut scenes = std::collections::HashMap::new();
 
     let mut load_scene = |arch: NpcArchetype, name: &str| {
-        let path = format!("KayKit_Adventurers_2.0_FREE/Characters/gltf/{name}.glb#Scene0");
+        let path = format!("characters/adventurers/{name}.glb#Scene0");
         scenes.insert(arch, asset_server.load(path));
     };
 
@@ -43,35 +49,61 @@ pub fn setup_npc_assets(
     load_scene(NpcArchetype::Rogue, "Rogue");
     load_scene(NpcArchetype::RogueHooded, "Rogue_Hooded");
 
-    // Animations (rig clips)
-    // - Idle_A: Rig_Medium_General.glb#Animation6
-    // - Walking_A: Rig_Medium_MovementBasic.glb#Animation8
-    // - Death_A: Rig_Medium_General.glb#Animation0
+    // Movement animations from MovementBasic.glb
+    // Idle_A = #6 (General), Walking_A = #8, Running_A = #5
     let idle_clip: Handle<AnimationClip> = asset_server.load(
-        "KayKit_Adventurers_2.0_FREE/Animations/gltf/Rig_Medium/Rig_Medium_General.glb#Animation6",
+        "characters/animations/Rig_Medium_General.glb#Animation6",
     );
     let walk_clip: Handle<AnimationClip> = asset_server.load(
-        "KayKit_Adventurers_2.0_FREE/Animations/gltf/Rig_Medium/Rig_Medium_MovementBasic.glb#Animation8",
+        "characters/animations/Rig_Medium_MovementBasic.glb#Animation8",
     );
-    let death_clip: Handle<AnimationClip> = asset_server.load(
-        "KayKit_Adventurers_2.0_FREE/Animations/gltf/Rig_Medium/Rig_Medium_General.glb#Animation0",
+    let run_clip: Handle<AnimationClip> = asset_server.load(
+        "characters/animations/Rig_Medium_MovementBasic.glb#Animation5",
     );
 
-    let (graph, nodes) = AnimationGraph::from_clips([idle_clip, walk_clip, death_clip]);
+    // Advanced movement from MovementAdvanced.glb
+    // Walking_Backwards = #12, Running_Strafe_Left = #8, Running_Strafe_Right = #9
+    let walk_back_clip: Handle<AnimationClip> = asset_server.load(
+        "characters/animations/Rig_Medium_MovementAdvanced.glb#Animation12",
+    );
+    let strafe_left_clip: Handle<AnimationClip> = asset_server.load(
+        "characters/animations/Rig_Medium_MovementAdvanced.glb#Animation8",
+    );
+    let strafe_right_clip: Handle<AnimationClip> = asset_server.load(
+        "characters/animations/Rig_Medium_MovementAdvanced.glb#Animation9",
+    );
+
+    // Death animation
+    let death_clip: Handle<AnimationClip> = asset_server.load(
+        "characters/animations/Rig_Medium_General.glb#Animation0",
+    );
+
+    // Build graph with all movement animations + death
+    // Order: idle, walk, run, walk_back, strafe_left, strafe_right, death
+    let (graph, nodes) = AnimationGraph::from_clips([
+        idle_clip,
+        walk_clip,
+        run_clip,
+        walk_back_clip,
+        strafe_left_clip,
+        strafe_right_clip,
+        death_clip,
+    ]);
     let animation_graph = animation_graphs.add(graph);
-    let idle_node = nodes[0];
-    let walk_node = nodes[1];
-    let death_node = nodes[2];
 
     commands.insert_resource(KayKitNpcAssets {
         scenes,
         animation_graph,
-        idle_node,
-        walk_node,
-        death_node,
+        idle_node: nodes[0],
+        walk_node: nodes[1],
+        run_node: nodes[2],
+        walk_back_node: nodes[3],
+        strafe_left_node: nodes[4],
+        strafe_right_node: nodes[5],
+        death_node: nodes[6],
     });
 
-    info!("Loaded KayKit NPC assets (scenes + idle/walk/death animations)");
+    info!("Loaded KayKit NPC assets (scenes + 7 animation clips)");
 }
 
 // =============================================================================
@@ -91,12 +123,44 @@ pub struct NpcAnimationRoot;
 #[derive(Component, Clone, Copy)]
 pub struct NpcRigOwner(pub Entity);
 
+/// Movement animation types for NPCs
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum NpcMovementAnim {
+    #[default]
+    Idle,
+    Walk,
+    Run,
+    WalkBack,
+    StrafeLeft,
+    StrafeRight,
+}
+
+/// Duration for crossfade blending between animations
+const NPC_ANIM_BLEND_DURATION: f32 = 0.2;
+
+/// Speed smoothing factor (lower = smoother but slower response)
+const NPC_SPEED_SMOOTHING: f32 = 8.0;
+
+/// Hysteresis margins to prevent animation flip-flopping at thresholds
+const HYSTERESIS_MARGIN: f32 = 0.3;
+
+/// Tracks NPC animation state with blending support
 #[derive(Component, Default)]
 pub struct NpcAnimState {
-    pub walking: bool,
+    /// Currently playing animation
+    pub current_anim: NpcMovementAnim,
+    /// Target animation (for blending)
+    pub target_anim: NpcMovementAnim,
+    /// Blend progress (0.0 = current, 1.0 = target)
+    pub blend_progress: f32,
+    /// Is dead (death animation playing)
     pub dead: bool,
+    /// Has been initialized (for motion detection)
     pub initialized: bool,
+    /// Last position (for motion-based animation detection)
     pub last_pos: Vec3,
+    /// Smoothed speed (exponential moving average to prevent jitter)
+    pub smoothed_speed: f32,
 }
 
 /// Add render components and spawn the visual model when an NPC replicates in.
@@ -139,7 +203,13 @@ pub fn handle_npc_spawned(
     }
 }
 
-/// Add `AnimationPlayer` + `AnimationTarget`s to the spawned KayKit NPC hierarchy.
+/// Marker for NPC models with non-KayKit rigs that don't have animations set up.
+#[derive(Component)]
+pub struct CustomNpcModel;
+
+/// Add `AnimationPlayer` + `AnimationTarget`s to the spawned NPC hierarchy.
+/// Models with "Rig_Medium" armature (all KayKit + Doctor/GarbageMan) get full animation support.
+/// Models with "Armature" are treated as static (no animations - fallback for incompatible rigs).
 pub fn setup_npc_rig(
     mut commands: Commands,
     assets: Option<Res<KayKitNpcAssets>>,
@@ -156,13 +226,22 @@ pub fn setup_npc_rig(
             continue;
         };
 
-        // Find the rig root node inside the spawned scene (named "Rig_Medium" in KayKit).
+        // Find the rig root node inside the spawned scene.
+        // KayKit models use "Rig_Medium", custom models use "Armature".
         let mut stack: Vec<Entity> = vec![model_root];
         let mut rig_root: Option<Entity> = None;
+        let mut is_custom_model = false;
+
         while let Some(e) = stack.pop() {
             if let Ok(name) = names_q.get(e) {
                 if name.as_str() == "Rig_Medium" {
                     rig_root = Some(e);
+                    break;
+                }
+                if name.as_str() == "Armature" {
+                    // Fallback for non-Rig_Medium models - mark as static (no animations)
+                    rig_root = Some(e);
+                    is_custom_model = true;
                     break;
                 }
             }
@@ -175,6 +254,16 @@ pub fn setup_npc_rig(
             // Scene not spawned yet.
             continue;
         };
+
+        // For custom models, just mark them as set up (no animations)
+        if is_custom_model {
+            commands.entity(rig_root).insert((
+                CustomNpcModel,
+                NpcRigOwner(owner),
+            ));
+            commands.entity(model_root).remove::<NeedsNpcRigSetup>();
+            continue;
+        }
 
         commands.entity(rig_root).insert((
             NpcAnimationRoot,
@@ -238,6 +327,69 @@ pub fn sync_npc_transforms(
 // ANIMATION
 // =============================================================================
 
+/// Helper to get the animation node for an NPC movement animation
+fn npc_movement_anim_to_node(anim: NpcMovementAnim, assets: &KayKitNpcAssets) -> AnimationNodeIndex {
+    match anim {
+        NpcMovementAnim::Idle => assets.idle_node,
+        NpcMovementAnim::Walk => assets.walk_node,
+        NpcMovementAnim::Run => assets.run_node,
+        NpcMovementAnim::WalkBack => assets.walk_back_node,
+        NpcMovementAnim::StrafeLeft => assets.strafe_left_node,
+        NpcMovementAnim::StrafeRight => assets.strafe_right_node,
+    }
+}
+
+/// Determine target animation based on movement speed with hysteresis
+/// The current_anim parameter enables hysteresis to prevent flip-flopping at thresholds
+fn determine_npc_target_anim(speed_xz: f32, current_anim: NpcMovementAnim) -> NpcMovementAnim {
+    // Thresholds with hysteresis:
+    // - To START running, need speed > 4.5
+    // - To STOP running, need speed < 4.5 - HYSTERESIS_MARGIN (4.2)
+    // - To START walking, need speed > 0.15
+    // - To STOP walking (go idle), need speed < 0.15 - margin (but clamped to ~0.05)
+
+    match current_anim {
+        NpcMovementAnim::Run => {
+            // Currently running - need to slow down significantly to change
+            if speed_xz < 4.5 - HYSTERESIS_MARGIN {
+                if speed_xz > 0.15 {
+                    NpcMovementAnim::Walk
+                } else {
+                    NpcMovementAnim::Idle
+                }
+            } else {
+                NpcMovementAnim::Run
+            }
+        }
+        NpcMovementAnim::Walk => {
+            // Currently walking
+            if speed_xz > 4.5 + HYSTERESIS_MARGIN {
+                NpcMovementAnim::Run
+            } else if speed_xz < 0.1 {
+                // Lower threshold to go idle (hysteresis)
+                NpcMovementAnim::Idle
+            } else {
+                NpcMovementAnim::Walk
+            }
+        }
+        _ => {
+            // Currently idle (or other) - need to exceed threshold to start moving
+            if speed_xz > 4.5 + HYSTERESIS_MARGIN {
+                NpcMovementAnim::Run
+            } else if speed_xz > 0.2 {
+                // Slightly higher threshold to start walking (hysteresis)
+                NpcMovementAnim::Walk
+            } else {
+                NpcMovementAnim::Idle
+            }
+        }
+    }
+}
+
+/// Drive NPC animations with motion-based directional movement and smooth blending:
+/// - Animation selected based on movement speed
+/// - Crossfade blending between animation states over 0.2 seconds
+/// - Dead NPCs play death animation
 pub fn update_npc_animation(
     assets: Option<Res<KayKitNpcAssets>>,
     time: Res<Time>,
@@ -253,49 +405,98 @@ pub fn update_npc_animation(
             continue;
         };
 
-        let health_current = health.current;
         let npc_pos = transform.translation;
+        let is_dead = health.is_dead();
 
-        let is_dead = health_current <= 0.0;
-
-        // Motion-based walking detection.
-        let mut speed_xz = 0.0;
-        if state.initialized {
-            let d = npc_pos - state.last_pos;
-            speed_xz = Vec2::new(d.x, d.z).length() / dt;
-        } else {
-            state.initialized = true;
-        }
-        state.last_pos = npc_pos;
-
-        let should_walk = !is_dead && speed_xz > 0.15;
-
+        // Handle death animation
         if is_dead && !state.dead {
             player.stop_all();
             player.start(assets.death_node);
             state.dead = true;
-            state.walking = false;
+            state.current_anim = NpcMovementAnim::Idle;
+            state.target_anim = NpcMovementAnim::Idle;
+            state.blend_progress = 1.0;
             continue;
         }
 
+        // If dead, keep death animation (don't switch back)
         if state.dead {
-            // Keep death animation playing or finished; don't switch back.
+            // Check if NPC respawned (health restored)
+            if !is_dead {
+                state.dead = false;
+                player.stop_all();
+                player.start(assets.idle_node).repeat();
+                state.current_anim = NpcMovementAnim::Idle;
+                state.target_anim = NpcMovementAnim::Idle;
+                state.blend_progress = 1.0;
+            }
             continue;
         }
 
-        if should_walk && !state.walking {
-            player.stop_all();
-            player.start(assets.walk_node).repeat();
-            state.walking = true;
-        } else if !should_walk && state.walking {
-            player.stop_all();
-            player.start(assets.idle_node).repeat();
-            state.walking = false;
+        // Motion-based animation detection with speed smoothing
+        let instant_speed = if state.initialized {
+            let d = npc_pos - state.last_pos;
+            state.last_pos = npc_pos;
+            Vec2::new(d.x, d.z).length() / dt
         } else {
-            // Ensure something is playing.
-            let node = if state.walking { assets.walk_node } else { assets.idle_node };
-            if !player.is_playing_animation(node) {
-                player.start(node).repeat();
+            state.initialized = true;
+            state.last_pos = npc_pos;
+            0.0
+        };
+
+        // Exponential moving average for smooth speed (prevents jittery animation switching)
+        let smooth_factor = 1.0 - (-NPC_SPEED_SMOOTHING * dt).exp();
+        state.smoothed_speed = state.smoothed_speed + (instant_speed - state.smoothed_speed) * smooth_factor;
+
+        // Use smoothed speed with hysteresis for stable animation selection
+        let target_anim = determine_npc_target_anim(state.smoothed_speed, state.target_anim);
+
+        // Check if we need to start a new transition
+        if target_anim != state.target_anim {
+            // If we were in the middle of a transition, snap to current target first
+            if state.blend_progress < 1.0 {
+                let old_current_node = npc_movement_anim_to_node(state.current_anim, &assets);
+                player.stop(old_current_node);
+                state.current_anim = state.target_anim;
+            }
+
+            // Start new transition
+            state.target_anim = target_anim;
+            state.blend_progress = 0.0;
+
+            // Start target animation at weight 0
+            let target_node = npc_movement_anim_to_node(target_anim, &assets);
+            player.start(target_node).repeat().set_weight(0.0);
+        }
+
+        // Update blend progress
+        if state.blend_progress < 1.0 {
+            state.blend_progress = (state.blend_progress + dt / NPC_ANIM_BLEND_DURATION).min(1.0);
+
+            let current_node = npc_movement_anim_to_node(state.current_anim, &assets);
+            let target_node = npc_movement_anim_to_node(state.target_anim, &assets);
+
+            // Apply weights for crossfade
+            let current_weight = 1.0 - state.blend_progress;
+            let target_weight = state.blend_progress;
+
+            if let Some(anim) = player.animation_mut(current_node) {
+                anim.set_weight(current_weight);
+            }
+            if let Some(anim) = player.animation_mut(target_node) {
+                anim.set_weight(target_weight);
+            }
+
+            // Transition complete - stop old animation
+            if state.blend_progress >= 1.0 {
+                player.stop(current_node);
+                state.current_anim = state.target_anim;
+            }
+        } else {
+            // Ensure current animation is playing (important on first frame after rig setup)
+            let current_node = npc_movement_anim_to_node(state.current_anim, &assets);
+            if !player.is_playing_animation(current_node) {
+                player.start(current_node).repeat();
             }
         }
     }

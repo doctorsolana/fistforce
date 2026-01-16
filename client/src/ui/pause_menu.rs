@@ -27,6 +27,7 @@ impl Plugin for PauseMenuPlugin {
                 button_interactions,
                 handle_pause_actions,
                 handle_graphics_toggles,
+                handle_slider_steps,
                 animate_menu_transition,
             )
                 .run_if(in_state(GameState::Paused)),
@@ -81,9 +82,27 @@ enum GraphicsToggle {
     Moonlight,
 }
 
+/// Slider controls (for view distance and prop distance)
+#[derive(Component, Clone, Copy, Debug)]
+enum SliderControl {
+    ViewDistance,
+    PropDistance,
+}
+
 /// Marker for toggle button text (so we can update it)
 #[derive(Component)]
 struct ToggleText(GraphicsToggle);
+
+/// Marker for slider value text (so we can update it)
+#[derive(Component)]
+struct SliderValueText(SliderControl);
+
+/// Step direction for slider buttons
+#[derive(Component, Clone, Copy)]
+struct SliderStep {
+    control: SliderControl,
+    delta: i32, // +1 or -1
+}
 
 fn spawn_pause_menu(mut commands: Commands, settings: Res<GraphicsSettings>) {
     // Full-screen darkened overlay
@@ -240,6 +259,23 @@ fn spawn_graphics_panel(parent: &mut ChildSpawnerCommands<'_>, settings: &Graphi
             spawn_toggle(panel, "Shadows", GraphicsToggle::Shadows, settings.shadows_enabled);
             spawn_toggle(panel, "Atmosphere", GraphicsToggle::Atmosphere, settings.atmosphere_enabled);
             spawn_toggle(panel, "Moonlight", GraphicsToggle::Moonlight, settings.moonlight_enabled);
+
+            // Separator
+            panel.spawn((
+                Node {
+                    width: Val::Percent(100.0),
+                    height: Val::Px(1.0),
+                    margin: UiRect::vertical(Val::Px(16.0)),
+                    ..default()
+                },
+                BackgroundColor(Color::srgba(1.0, 1.0, 1.0, 0.1)),
+            ));
+
+            // Slider controls
+            spawn_slider(panel, "View Distance", SliderControl::ViewDistance,
+                &format!("{} chunks", settings.view_distance));
+            spawn_slider(panel, "Prop Distance", SliderControl::PropDistance,
+                &format!("{:.0}%", settings.prop_render_multiplier * 100.0));
         });
 }
 
@@ -302,6 +338,110 @@ fn spawn_toggle(parent: &mut ChildSpawnerCommands<'_>, label: &str, toggle: Grap
         });
 }
 
+fn spawn_slider(parent: &mut ChildSpawnerCommands<'_>, label: &str, control: SliderControl, value: &str) {
+    parent
+        .spawn(Node {
+            flex_direction: FlexDirection::Row,
+            align_items: AlignItems::Center,
+            justify_content: JustifyContent::SpaceBetween,
+            width: Val::Percent(100.0),
+            margin: UiRect::bottom(Val::Px(12.0)),
+            ..default()
+        })
+        .with_children(|row| {
+            // Label
+            row.spawn((
+                Text::new(label),
+                TextFont {
+                    font_size: 18.0,
+                    ..default()
+                },
+                TextColor(TEXT_COLOR),
+                Node {
+                    margin: UiRect::right(Val::Px(20.0)),
+                    ..default()
+                },
+            ));
+
+            // Control row: [-] [value] [+]
+            row.spawn(Node {
+                flex_direction: FlexDirection::Row,
+                align_items: AlignItems::Center,
+                column_gap: Val::Px(8.0),
+                ..default()
+            })
+            .with_children(|controls| {
+                // Minus button
+                controls
+                    .spawn((
+                        Button,
+                        SliderStep { control, delta: -1 },
+                        Node {
+                            width: Val::Px(28.0),
+                            height: Val::Px(28.0),
+                            justify_content: JustifyContent::Center,
+                            align_items: AlignItems::Center,
+                            ..default()
+                        },
+                        BackgroundColor(Color::srgb(0.3, 0.3, 0.35)),
+                        BorderRadius::all(Val::Px(4.0)),
+                    ))
+                    .with_children(|btn| {
+                        btn.spawn((
+                            Text::new("-"),
+                            TextFont {
+                                font_size: 18.0,
+                                ..default()
+                            },
+                            TextColor(TEXT_COLOR),
+                        ));
+                    });
+
+                // Value display
+                controls.spawn((
+                    SliderValueText(control),
+                    Text::new(value),
+                    TextFont {
+                        font_size: 14.0,
+                        ..default()
+                    },
+                    TextColor(TEXT_COLOR),
+                    Node {
+                        min_width: Val::Px(70.0),
+                        justify_content: JustifyContent::Center,
+                        ..default()
+                    },
+                ));
+
+                // Plus button
+                controls
+                    .spawn((
+                        Button,
+                        SliderStep { control, delta: 1 },
+                        Node {
+                            width: Val::Px(28.0),
+                            height: Val::Px(28.0),
+                            justify_content: JustifyContent::Center,
+                            align_items: AlignItems::Center,
+                            ..default()
+                        },
+                        BackgroundColor(Color::srgb(0.3, 0.3, 0.35)),
+                        BorderRadius::all(Val::Px(4.0)),
+                    ))
+                    .with_children(|btn| {
+                        btn.spawn((
+                            Text::new("+"),
+                            TextFont {
+                                font_size: 18.0,
+                                ..default()
+                            },
+                            TextColor(TEXT_COLOR),
+                        ));
+                    });
+            });
+        });
+}
+
 fn despawn_pause_menu(mut commands: Commands, query: Query<Entity, With<PauseMenuRoot>>) {
     for entity in query.iter() {
         commands.entity(entity).despawn();
@@ -356,12 +496,12 @@ fn animate_menu_transition(
 
 fn button_interactions(
     mut buttons: Query<
-        (&Interaction, &mut BackgroundColor, Option<&GraphicsToggle>),
+        (&Interaction, &mut BackgroundColor, Option<&GraphicsToggle>, Option<&SliderStep>),
         (Changed<Interaction>, With<Button>),
     >,
     settings: Res<GraphicsSettings>,
 ) {
-    for (interaction, mut bg_color, toggle_opt) in buttons.iter_mut() {
+    for (interaction, mut bg_color, toggle_opt, slider_opt) in buttons.iter_mut() {
         // For toggle buttons, use green/red based on state
         if let Some(toggle) = toggle_opt {
             let enabled = match toggle {
@@ -370,16 +510,24 @@ fn button_interactions(
                 GraphicsToggle::Atmosphere => settings.atmosphere_enabled,
                 GraphicsToggle::Moonlight => settings.moonlight_enabled,
             };
-            
+
             let base_color = if enabled {
                 Color::srgb(0.2, 0.55, 0.3)
             } else {
                 Color::srgb(0.55, 0.2, 0.2)
             };
-            
+
             *bg_color = match interaction {
                 Interaction::Pressed => BackgroundColor(base_color.lighter(0.15)),
                 Interaction::Hovered => BackgroundColor(base_color.lighter(0.08)),
+                Interaction::None => BackgroundColor(base_color),
+            };
+        } else if slider_opt.is_some() {
+            // Slider step buttons ([-] [+])
+            let base_color = Color::srgb(0.3, 0.3, 0.35);
+            *bg_color = match interaction {
+                Interaction::Pressed => BackgroundColor(base_color.lighter(0.2)),
+                Interaction::Hovered => BackgroundColor(base_color.lighter(0.1)),
                 Interaction::None => BackgroundColor(base_color),
             };
         } else {
@@ -475,6 +623,60 @@ fn handle_graphics_toggles(
             for (btn_toggle, mut bg_color) in toggle_buttons.iter_mut() {
                 if std::mem::discriminant(btn_toggle) == std::mem::discriminant(toggle) {
                     *bg_color = BackgroundColor(new_color);
+                }
+            }
+        }
+    }
+}
+
+fn handle_slider_steps(
+    buttons: Query<(&Interaction, &SliderStep), Changed<Interaction>>,
+    mut settings: ResMut<GraphicsSettings>,
+    mut slider_texts: Query<(&SliderValueText, &mut Text)>,
+) {
+    for (interaction, step) in buttons.iter() {
+        if *interaction == Interaction::Pressed {
+            match step.control {
+                SliderControl::ViewDistance => {
+                    // View distance: 2-16 chunks (128m - 1024m)
+                    let new_val = (settings.view_distance + step.delta).clamp(2, 16);
+                    if new_val != settings.view_distance {
+                        settings.view_distance = new_val;
+                        info!("View distance = {} chunks ({}m)", new_val, new_val * 64);
+
+                        // Update text
+                        for (text_control, mut text) in slider_texts.iter_mut() {
+                            if matches!(text_control.0, SliderControl::ViewDistance) {
+                                text.0 = format!("{} chunks", new_val);
+                            }
+                        }
+                    }
+                }
+                SliderControl::PropDistance => {
+                    // Prop render distance: 25%-400% in 25% steps
+                    let steps = [0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0, 2.25, 2.5, 2.75, 3.0, 3.25, 3.5, 3.75, 4.0];
+                    let current_idx = steps.iter()
+                        .position(|&x| (x - settings.prop_render_multiplier).abs() < 0.01)
+                        .unwrap_or(3); // Default to 1.0 if not found
+
+                    let new_idx = if step.delta > 0 {
+                        (current_idx + 1).min(steps.len() - 1)
+                    } else {
+                        current_idx.saturating_sub(1)
+                    };
+
+                    let new_val = steps[new_idx];
+                    if (new_val - settings.prop_render_multiplier).abs() > 0.01 {
+                        settings.prop_render_multiplier = new_val;
+                        info!("Prop render multiplier = {:.0}%", new_val * 100.0);
+
+                        // Update text
+                        for (text_control, mut text) in slider_texts.iter_mut() {
+                            if matches!(text_control.0, SliderControl::PropDistance) {
+                                text.0 = format!("{:.0}%", new_val * 100.0);
+                            }
+                        }
+                    }
                 }
             }
         }

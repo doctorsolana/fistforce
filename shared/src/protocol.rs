@@ -145,6 +145,45 @@ pub struct AudioEvent {
     pub kind: AudioEventKind,
 }
 
+// --- Player Name Submission (for persistence) ---
+
+/// Message sent from client to submit their player name on connection
+#[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
+pub struct SubmitPlayerName {
+    /// Chosen player name (3-16 chars, alphanumeric + _ and -)
+    pub name: String,
+}
+
+/// Server response to player name submission
+#[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
+pub enum NameSubmissionResult {
+    /// Name accepted, player can now spawn
+    Accepted {
+        /// Whether an existing profile was loaded from disk
+        profile_loaded: bool,
+    },
+    /// Name rejected, must try again
+    Rejected {
+        /// Reason for rejection
+        reason: NameRejectionReason,
+    },
+}
+
+/// Reasons why a player name was rejected
+#[derive(Serialize, Deserialize, Debug, PartialEq, Clone, Copy)]
+pub enum NameRejectionReason {
+    /// Name contains invalid characters (only alphanumeric, _, - allowed)
+    InvalidCharacters,
+    /// Name is too short (< 3 characters)
+    TooShort,
+    /// Name is too long (> 16 characters)
+    TooLong,
+    /// Name is reserved (admin, server, etc.)
+    Reserved,
+    /// Name is already in use by another connected player
+    AlreadyOnline,
+}
+
 // --- Channels ---
 // In Lightyear 0.25, Channel trait is auto-implemented for all Send + Sync + 'static types
 
@@ -278,8 +317,12 @@ impl Plugin for ProtocolPlugin {
             .add_direction(NetworkDirection::ClientToServer);
         app.register_message::<PlaceBuildingRequest>()
             .add_direction(NetworkDirection::ClientToServer);
-        
+        app.register_message::<SubmitPlayerName>()
+            .add_direction(NetworkDirection::ClientToServer);
+
         // Server -> Client
+        app.register_message::<NameSubmissionResult>()
+            .add_direction(NetworkDirection::ServerToClient);
         app.register_message::<HitConfirm>()
             .add_direction(NetworkDirection::ServerToClient);
         app.register_message::<BulletImpact>()

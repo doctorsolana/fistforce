@@ -16,6 +16,7 @@ use lightyear::prelude::client::Connected;
 use super::styles::*;
 use crate::input::InputState;
 use crate::chest::OpenChest;
+use crate::states::GameState;
 
 /// Plugin for inventory UI
 pub struct InventoryPlugin;
@@ -110,11 +111,17 @@ const HOTBAR_BORDER: Color = Color::srgba(0.55, 0.45, 0.25, 0.9);
 /// Toggle inventory open/close with I key
 fn toggle_inventory(
     keyboard: Res<ButtonInput<KeyCode>>,
+    game_state: Res<State<GameState>>,
     mut inventory_open: ResMut<InventoryOpen>,
     mut input_state: ResMut<InputState>,
     windows: Query<Entity, With<PrimaryWindow>>,
     mut cursor_opts: Query<&mut CursorOptions>,
 ) {
+    // Only allow inventory toggle in Playing state
+    if game_state.get() != &GameState::Playing {
+        return;
+    }
+
     if keyboard.just_pressed(KeyCode::KeyI) {
         inventory_open.0 = !inventory_open.0;
         input_state.inventory_open = inventory_open.0;

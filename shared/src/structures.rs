@@ -7,6 +7,7 @@ use bevy::prelude::*;
 use noise::{NoiseFn, Perlin};
 use serde::{Deserialize, Serialize};
 
+use crate::building::BuildingType;
 use crate::terrain::{ChunkCoord, SettlementInfo, TerrainGenerator, CHUNK_SIZE, WORLD_SEED};
 
 /// Types of desert structures (Dune-inspired)
@@ -361,4 +362,182 @@ pub fn get_structures_at(terrain: &TerrainGenerator, x: f32, z: f32) -> Vec<Stru
     }
 
     all_structures
+}
+
+// =============================================================================
+// MEDIEVAL TOWN GENERATION
+// =============================================================================
+
+/// A building spawn for the medieval town
+#[derive(Debug, Clone)]
+pub struct MedievalTownBuilding {
+    pub building_type: BuildingType,
+    pub position: Vec3,
+    pub rotation: f32, // Y-axis rotation in radians
+}
+
+/// Town layout constants - exported for use by NPC spawning
+pub const MEDIEVAL_BLOCK_SIZE: f32 = 45.0;
+pub const MEDIEVAL_STREET_WIDTH: f32 = 8.0;
+pub const MEDIEVAL_SPACING: f32 = MEDIEVAL_BLOCK_SIZE + MEDIEVAL_STREET_WIDTH; // 53m between block centers
+
+/// Generate medieval town buildings in a grid pattern around a center point.
+///
+/// Layout: 3x3 grid of blocks with center block as town square (empty).
+/// Each block contains 4-5 houses with proper spacing.
+///
+/// Returns ~35 buildings total.
+pub fn generate_medieval_town(center: Vec3, seed: u32) -> Vec<MedievalTownBuilding> {
+    let mut buildings = Vec::new();
+
+    // Use deterministic noise for variety
+    let noise = Perlin::new(seed.wrapping_add(12000));
+
+    // Block offsets (3x3 grid, skip center for town square)
+    let block_offsets: [(i32, i32); 8] = [
+        (-1, -1), (0, -1), (1, -1),
+        (-1,  0),          (1,  0),
+        (-1,  1), (0,  1), (1,  1),
+    ];
+
+    // Blocks adjacent to center get larger houses (inner ring)
+    let inner_blocks: [(i32, i32); 4] = [
+        (0, -1), (-1, 0), (1, 0), (0, 1),
+    ];
+
+    for (bx, bz) in block_offsets.iter() {
+        let block_center = Vec3::new(
+            center.x + *bx as f32 * MEDIEVAL_SPACING,
+            center.y,
+            center.z + *bz as f32 * MEDIEVAL_SPACING,
+        );
+
+        let is_inner = inner_blocks.contains(&(*bx, *bz));
+
+        // Generate houses within this block
+        let block_buildings = generate_block_buildings(
+            block_center,
+            is_inner,
+            &noise,
+            *bx,
+            *bz,
+        );
+        buildings.extend(block_buildings);
+    }
+
+    // Add 2 manors near the town square (special placement)
+    // Manor 1: East side of square
+    buildings.push(MedievalTownBuilding {
+        building_type: BuildingType::House10,
+        position: Vec3::new(center.x + 20.0, center.y, center.z),
+        rotation: std::f32::consts::PI, // Face the square (west)
+    });
+
+    // Manor 2: West side of square
+    buildings.push(MedievalTownBuilding {
+        building_type: BuildingType::House10,
+        position: Vec3::new(center.x - 20.0, center.y, center.z),
+        rotation: 0.0, // Face the square (east)
+    });
+
+    buildings
+}
+
+/// Generate buildings within a single block
+fn generate_block_buildings(
+    block_center: Vec3,
+    is_inner: bool,
+    noise: &Perlin,
+    block_x: i32,
+    block_z: i32,
+) -> Vec<MedievalTownBuilding> {
+    let mut buildings = Vec::new();
+
+    // Tighter house positions within block (relative to block center)
+    // Houses placed closer together for more compact feel
+    let house_positions: [(f32, f32, f32); 4] = [
+        (-12.0, -12.0, std::f32::consts::FRAC_PI_4 * 5.0),        // SW corner, face SW
+        ( 12.0, -12.0, -std::f32::consts::FRAC_PI_4),              // SE corner, face SE
+        (-12.0,  12.0, std::f32::consts::FRAC_PI_4 * 3.0),        // NW corner, face NW
+        ( 12.0,  12.0, std::f32::consts::FRAC_PI_4),               // NE corner, face NE
+    ];
+
+    for (i, (dx, dz, base_rot)) in house_positions.iter().enumerate() {
+        // Smaller jitter for tighter layout
+        let jitter_x = noise.get([
+            (block_center.x + dx + i as f32 * 17.3) as f64 * 0.1,
+            (block_center.z + dz) as f64 * 0.1,
+        ]) as f32 * 1.5;
+        let jitter_z = noise.get([
+            (block_center.x + dx) as f64 * 0.1,
+            (block_center.z + dz + i as f32 * 13.7) as f64 * 0.1,
+        ]) as f32 * 1.5;
+
+        // Noise for rotation variation
+        let rot_jitter = noise.get([
+            (block_x as f64 + i as f64) * 0.5,
+            (block_z as f64 + i as f64) * 0.5,
+        ]) as f32 * 0.2;
+
+        // Select house type based on position and noise
+        let type_noise = noise.get([
+            (block_center.x + dx * 2.0) as f64 * 0.05,
+            (block_center.z + dz * 2.0) as f64 * 0.05,
+        ]) as f32;
+
+        let building_type = if is_inner && type_noise > 0.3 {
+            // Inner blocks have chance for larger houses
+            BuildingType::House09
+        } else {
+            // Select from small house types based on noise
+            match ((type_noise * 4.0).abs() as i32) % 4 {
+                0 => BuildingType::House01,
+                1 => BuildingType::House02,
+                2 => BuildingType::House03,
+                _ => BuildingType::House04,
+            }
+        };
+
+        buildings.push(MedievalTownBuilding {
+            building_type,
+            position: Vec3::new(
+                block_center.x + dx + jitter_x,
+                block_center.y,
+                block_center.z + dz + jitter_z,
+            ),
+            rotation: base_rot + rot_jitter,
+        });
+    }
+
+    // Add a 5th house in some blocks (center-ish position)
+    let extra_house_noise = noise.get([
+        block_x as f64 * 0.7,
+        block_z as f64 * 0.7,
+    ]) as f32;
+
+    if extra_house_noise > -0.2 {
+        let extra_rot = extra_house_noise * std::f32::consts::TAU;
+        let extra_type = if is_inner && extra_house_noise > 0.5 {
+            BuildingType::House09
+        } else {
+            match ((extra_house_noise * 4.0).abs() as i32) % 4 {
+                0 => BuildingType::House01,
+                1 => BuildingType::House02,
+                2 => BuildingType::House03,
+                _ => BuildingType::House04,
+            }
+        };
+
+        buildings.push(MedievalTownBuilding {
+            building_type: extra_type,
+            position: Vec3::new(
+                block_center.x + extra_house_noise * 5.0,
+                block_center.y,
+                block_center.z + (1.0 - extra_house_noise.abs()) * 5.0 * extra_house_noise.signum(),
+            ),
+            rotation: extra_rot,
+        });
+    }
+
+    buildings
 }

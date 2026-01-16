@@ -387,3 +387,11 @@ pub struct LocalTracer {
     pub spawn_time: f32,
     pub lifetime: f32,
 }
+
+/// Event component to signal that an NPC took damage (server-side only, not replicated)
+/// This is added temporarily and consumed by the AI system
+#[derive(Component, Clone, Debug)]
+pub struct NpcDamageEvent {
+    pub damage_source_position: Vec3,
+    pub damage_amount: f32,
+}

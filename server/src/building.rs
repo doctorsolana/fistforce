@@ -11,7 +11,11 @@ use std::collections::HashMap;
 use shared::{
     BuildingType, PlaceBuildingRequest, PlacedBuilding, BuildingPosition,
     Inventory, WorldTerrain, Player, ChunkCoord, TerrainDeltaChunk,
+    structures::{generate_medieval_town, MedievalTownBuilding, MEDIEVAL_SPACING},
+    terrain::WORLD_SEED,
 };
+
+use crate::npc;
 
 /// Resource to track if test buildings have been spawned
 #[derive(Resource)]
@@ -196,4 +200,128 @@ pub fn spawn_test_building(
     ));
     
     info!("Spawned test Train Station at {:?}", building_pos);
+}
+
+/// Resource to track if the medieval town has been spawned
+#[derive(Resource)]
+pub struct MedievalTownSpawned;
+
+/// Spawn the medieval town with buildings and NPCs
+pub fn spawn_medieval_town(
+    mut commands: Commands,
+    spawned: Option<Res<MedievalTownSpawned>>,
+    mut terrain: ResMut<WorldTerrain>,
+    mut delta_entities: ResMut<DeltaChunkEntities>,
+    server_query: Query<Entity, (With<crate::GameServer>, With<Started>)>,
+) {
+    // Only spawn once and only after server is started
+    if spawned.is_some() || server_query.is_empty() {
+        return;
+    }
+
+    commands.insert_resource(MedievalTownSpawned);
+
+    // Town center position - in grassland biome, away from desert and player spawn
+    // Located at (350, terrain_height, 350)
+    let town_center_x = 350.0;
+    let town_center_z = 350.0;
+    let terrain_height = terrain.get_height(town_center_x, town_center_z);
+    let town_center = Vec3::new(town_center_x, terrain_height, town_center_z);
+
+    info!("Spawning medieval town at {:?}", town_center);
+
+    // First, flatten the entire town area to create a smooth foundation
+    // Town spans 3x3 blocks, so total radius is ~1.5 * SPACING from center
+    let town_radius = MEDIEVAL_SPACING * 1.7; // ~90m radius for the whole town
+    let town_half_extents = Vec2::new(town_radius, town_radius);
+
+    // Apply a large-scale flatten to the whole town area
+    // This creates a gently leveled foundation without being perfectly flat
+    let town_flatten_chunks = terrain.apply_flatten_rect(
+        town_center,
+        town_half_extents,
+        0.0, // No rotation for overall town area
+        15.0, // Gentle slope transition at edges
+    );
+
+    info!(
+        "Town area flattened: {} chunks affected, radius {:.0}m",
+        town_flatten_chunks.len(),
+        town_radius
+    );
+
+    // Spawn delta chunk entities for town-wide flattening
+    for coord in &town_flatten_chunks {
+        if let Some(delta_data) = terrain.get_delta_chunk(*coord) {
+            let chunk_component = TerrainDeltaChunk::from_delta_data(*coord, delta_data);
+            if !delta_entities.map.contains_key(coord) {
+                let entity = commands.spawn((
+                    chunk_component,
+                    Replicate::new(ReplicationMode::SingleServer(NetworkTarget::All)),
+                )).id();
+                delta_entities.map.insert(*coord, entity);
+            }
+        }
+    }
+
+    // Generate town buildings
+    let buildings = generate_medieval_town(town_center, WORLD_SEED);
+    info!("Generated {} medieval town buildings", buildings.len());
+
+    let mut total_chunks_affected = town_flatten_chunks.len();
+
+    // Spawn each building with additional local terrain flattening
+    for MedievalTownBuilding { building_type, position, rotation } in buildings {
+        let def = building_type.definition();
+
+        // Get terrain height at building position (now on flattened ground)
+        let building_terrain_y = terrain.get_height(position.x, position.z);
+        let building_pos = Vec3::new(position.x, building_terrain_y, position.z);
+
+        // Apply local terrain flattening for this building
+        let half_extents = Vec2::new(def.footprint.x / 2.0, def.footprint.y / 2.0);
+        let affected_chunks = terrain.apply_flatten_rect(
+            building_pos,
+            half_extents,
+            rotation,
+            def.flatten_radius,
+        );
+
+        total_chunks_affected += affected_chunks.len();
+
+        // Spawn/update TerrainDeltaChunk entities for affected chunks
+        for coord in &affected_chunks {
+            if let Some(delta_data) = terrain.get_delta_chunk(*coord) {
+                let chunk_component = TerrainDeltaChunk::from_delta_data(*coord, delta_data);
+
+                if !delta_entities.map.contains_key(coord) {
+                    // Spawn new entity
+                    let entity = commands.spawn((
+                        chunk_component,
+                        Replicate::new(ReplicationMode::SingleServer(NetworkTarget::All)),
+                    )).id();
+                    delta_entities.map.insert(*coord, entity);
+                }
+            }
+        }
+
+        // Spawn the building entity
+        commands.spawn((
+            PlacedBuilding {
+                building_type,
+                rotation,
+            },
+            BuildingPosition(building_pos),
+            Replicate::new(ReplicationMode::SingleServer(NetworkTarget::All)),
+        ));
+    }
+
+    info!(
+        "Medieval town buildings spawned, {} terrain chunks modified total",
+        total_chunks_affected
+    );
+
+    // Spawn NPCs for the town
+    let mut npc_id_start = 1000_u64; // Start IDs at 1000 to avoid conflicts with other NPCs
+    npc::spawn_medieval_town_npcs(&mut commands, &terrain, town_center, &mut npc_id_start);
 }

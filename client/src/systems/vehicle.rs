@@ -3,7 +3,7 @@
 //! Handles speeder bike visuals, spawning, and transform synchronization.
 
 use bevy::prelude::*;
-use shared::{Vehicle, VehicleState};
+use shared::{Vehicle, VehicleState, VehicleType};
 
 // =============================================================================
 // COMPONENTS
@@ -31,6 +31,10 @@ pub struct VehicleRenderSmoothing {
     pub last_server_heading: f32,
     pub last_server_pitch: f32,
     pub last_server_roll: f32,
+
+    /// Smoothed velocity for extrapolation (reduces jitter from velocity discontinuities)
+    pub smoothed_velocity: Vec3,
+    pub smoothed_angular_yaw: f32,
 }
 
 impl Default for VehicleRenderSmoothing {
@@ -45,6 +49,8 @@ impl Default for VehicleRenderSmoothing {
             last_server_heading: 0.0,
             last_server_pitch: 0.0,
             last_server_roll: 0.0,
+            smoothed_velocity: Vec3::ZERO,
+            smoothed_angular_yaw: 0.0,
         }
     }
 }
@@ -56,12 +62,148 @@ impl Default for VehicleRenderSmoothing {
 /// Handle vehicle spawn visuals - Star Wars style speeder bike!
 pub fn handle_vehicle_spawned(
     mut commands: Commands,
+    _asset_server: Res<AssetServer>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     new_vehicles: Query<(Entity, &Vehicle, &VehicleState), Added<Vehicle>>,
 ) {
-    for (entity, _vehicle, state) in new_vehicles.iter() {
-        info!("Speeder bike spawned at {:?}", state.position);
+    for (entity, vehicle, state) in new_vehicles.iter() {
+        info!("Vehicle spawned ({:?}) at {:?}", vehicle.vehicle_type, state.position);
+
+        // Set up the parent entity with transform and visibility
+        let initial_rotation = Quat::from_euler(
+            EulerRot::YXZ,
+            state.heading,
+            state.pitch,
+            -state.roll,
+        );
+        commands.entity(entity).insert((
+            Transform::from_translation(state.position).with_rotation(initial_rotation),
+            Visibility::Inherited,
+            VehicleVisual,
+            VehicleRenderSmoothing {
+                initialized: true,
+                position: state.position,
+                heading: state.heading,
+                pitch: state.pitch,
+                roll: state.roll,
+                last_server_position: state.position,
+                last_server_heading: state.heading,
+                last_server_pitch: state.pitch,
+                last_server_roll: state.roll,
+                smoothed_velocity: state.velocity,
+                smoothed_angular_yaw: state.angular_velocity_yaw,
+            },
+        ));
+
+        if vehicle.vehicle_type == VehicleType::Car {
+            // Simple procedural car for physics testing
+            // Using basic shapes so we can clearly see orientation and ground alignment
+
+            let def = shared::vehicle_def(VehicleType::Car);
+
+            // Car body material - blue so it's distinct from bike
+            let car_body = materials.add(StandardMaterial {
+                base_color: Color::srgb(0.15, 0.25, 0.45),
+                metallic: 0.7,
+                perceptual_roughness: 0.3,
+                ..default()
+            });
+
+            // Front indicator - bright yellow/green to show which way is forward
+            let front_material = materials.add(StandardMaterial {
+                base_color: Color::srgb(0.8, 0.9, 0.2),
+                emissive: bevy::color::LinearRgba::new(1.0, 1.2, 0.3, 1.0),
+                ..default()
+            });
+
+            // Rear indicator - red for back
+            let rear_material = materials.add(StandardMaterial {
+                base_color: Color::srgb(0.8, 0.1, 0.1),
+                emissive: bevy::color::LinearRgba::new(1.5, 0.2, 0.1, 1.0),
+                ..default()
+            });
+
+            // Wheel material - dark rubber
+            let wheel_material = materials.add(StandardMaterial {
+                base_color: Color::srgb(0.1, 0.1, 0.1),
+                metallic: 0.0,
+                perceptual_roughness: 0.9,
+                ..default()
+            });
+
+            // Dimensions from physics def
+            let body_length = def.wheel_base * 1.1;  // Slightly longer than wheelbase
+            let body_width = def.track_width * 0.9;
+            let body_height = 0.5;
+            let wheel_radius = def.wheel_radius;
+            let half_wb = def.wheel_base * 0.5;
+            let half_track = def.track_width * 0.5;
+
+            commands.entity(entity).with_children(|parent| {
+                // === MAIN BODY - a box ===
+                let body_mesh = meshes.add(Cuboid::new(body_width, body_height, body_length));
+                parent.spawn((
+                    Mesh3d(body_mesh),
+                    MeshMaterial3d(car_body.clone()),
+                    // Position body so bottom is near wheel centers
+                    Transform::from_xyz(0.0, wheel_radius + 0.1, 0.0),
+                ));
+
+                // === FRONT INDICATOR - wedge/box at front ===
+                let front_mesh = meshes.add(Cuboid::new(body_width * 0.8, 0.15, 0.3));
+                parent.spawn((
+                    Mesh3d(front_mesh),
+                    MeshMaterial3d(front_material),
+                    // Front is negative Z in our coordinate system
+                    Transform::from_xyz(0.0, wheel_radius + 0.35, -half_wb - 0.2),
+                ));
+
+                // === REAR INDICATOR - red box at back ===
+                let rear_mesh = meshes.add(Cuboid::new(body_width * 0.9, 0.2, 0.15));
+                parent.spawn((
+                    Mesh3d(rear_mesh),
+                    MeshMaterial3d(rear_material),
+                    Transform::from_xyz(0.0, wheel_radius + 0.3, half_wb + 0.15),
+                ));
+
+                // === WHEELS - 4 cylinders ===
+                let wheel_mesh = meshes.add(Cylinder::new(wheel_radius, 0.15));
+
+                // Front-left wheel
+                parent.spawn((
+                    Mesh3d(wheel_mesh.clone()),
+                    MeshMaterial3d(wheel_material.clone()),
+                    Transform::from_xyz(-half_track - 0.1, wheel_radius, -half_wb)
+                        .with_rotation(Quat::from_rotation_z(std::f32::consts::FRAC_PI_2)),
+                ));
+
+                // Front-right wheel
+                parent.spawn((
+                    Mesh3d(wheel_mesh.clone()),
+                    MeshMaterial3d(wheel_material.clone()),
+                    Transform::from_xyz(half_track + 0.1, wheel_radius, -half_wb)
+                        .with_rotation(Quat::from_rotation_z(std::f32::consts::FRAC_PI_2)),
+                ));
+
+                // Rear-left wheel
+                parent.spawn((
+                    Mesh3d(wheel_mesh.clone()),
+                    MeshMaterial3d(wheel_material.clone()),
+                    Transform::from_xyz(-half_track - 0.1, wheel_radius, half_wb)
+                        .with_rotation(Quat::from_rotation_z(std::f32::consts::FRAC_PI_2)),
+                ));
+
+                // Rear-right wheel
+                parent.spawn((
+                    Mesh3d(wheel_mesh.clone()),
+                    MeshMaterial3d(wheel_material.clone()),
+                    Transform::from_xyz(half_track + 0.1, wheel_radius, half_wb)
+                        .with_rotation(Quat::from_rotation_z(std::f32::consts::FRAC_PI_2)),
+                ));
+            });
+            continue;
+        }
 
         // Main body material - dark metallic gunmetal
         let body_material = materials.add(StandardMaterial {
@@ -100,30 +242,6 @@ pub fn handle_vehicle_spawned(
             metallic: 0.0,
             ..default()
         });
-
-        // Set up the parent entity with transform and visibility
-        let initial_rotation = Quat::from_euler(
-            EulerRot::YXZ,
-            state.heading,
-            state.pitch,
-            -state.roll,
-        );
-        commands.entity(entity).insert((
-            Transform::from_translation(state.position).with_rotation(initial_rotation),
-            Visibility::Inherited,
-            VehicleVisual,
-            VehicleRenderSmoothing {
-                initialized: true,
-                position: state.position,
-                heading: state.heading,
-                pitch: state.pitch,
-                roll: state.roll,
-                last_server_position: state.position,
-                last_server_heading: state.heading,
-                last_server_pitch: state.pitch,
-                last_server_roll: state.roll,
-            },
-        ));
 
         // Build the speeder bike from child meshes
         commands.entity(entity).with_children(|parent| {
@@ -337,20 +455,38 @@ pub fn handle_vehicle_spawned(
 // TRANSFORM SYNC
 // =============================================================================
 
-/// Sync vehicle transforms from replicated state
+/// Sync vehicle transforms from replicated state with improved smoothing.
+///
+/// Improvements over basic dead-reckoning:
+/// 1. Velocity smoothing - reduces jitter from velocity discontinuities
+/// 2. Heading-aware extrapolation - predicts curved paths when turning
+/// 3. Continuous background correction - spreads corrections over time
+/// 4. Error clamping - prevents large desync
 pub fn sync_vehicle_transforms(
     time: Res<Time>,
     mut vehicles: Query<(&VehicleState, &mut VehicleRenderSmoothing, &mut Transform), With<Vehicle>>,
 ) {
     let dt = time.delta_secs();
 
-    // Correction rates: higher = follows server more tightly, lower = smoother/laggier.
-    // These are tuned to remove visible stepping at 30Hz replication while staying responsive.
+    // === CORRECTION RATES ===
+    // On-snapshot correction (stronger, only when server sends new data)
     let pos_correction_rate: f32 = 25.0;
     let rot_correction_rate: f32 = 30.0;
-
     let t_pos = 1.0_f32 - (-pos_correction_rate * dt).exp();
     let t_rot = 1.0_f32 - (-rot_correction_rate * dt).exp();
+
+    // Background correction (always-on, very gentle drift toward server)
+    let background_pos_rate: f32 = 3.0;
+    let background_rot_rate: f32 = 4.0;
+    let t_bg_pos = 1.0_f32 - (-background_pos_rate * dt).exp();
+    let t_bg_rot = 1.0_f32 - (-background_rot_rate * dt).exp();
+
+    // Velocity smoothing rate
+    let vel_smooth_rate: f32 = 15.0;
+    let t_vel = 1.0_f32 - (-vel_smooth_rate * dt).exp();
+
+    // Maximum allowed prediction error before emergency correction
+    let max_error: f32 = 1.5; // meters
 
     for (state, mut smooth, mut transform) in vehicles.iter_mut() {
         if !smooth.initialized {
@@ -363,17 +499,35 @@ pub fn sync_vehicle_transforms(
             smooth.last_server_heading = state.heading;
             smooth.last_server_pitch = state.pitch;
             smooth.last_server_roll = state.roll;
+            smooth.smoothed_velocity = state.velocity;
+            smooth.smoothed_angular_yaw = state.angular_velocity_yaw;
         } else {
-            // --- Dead reckoning (continuous motion between snapshots) ---
-            smooth.position += state.velocity * dt;
-            smooth.heading = normalize_angle(smooth.heading + state.angular_velocity_yaw * dt);
+            // === 1. VELOCITY SMOOTHING ===
+            // Smooth velocity/angular velocity to reduce jitter from discrete server updates
+            smooth.smoothed_velocity = smooth.smoothed_velocity.lerp(state.velocity, t_vel);
+            smooth.smoothed_angular_yaw += (state.angular_velocity_yaw - smooth.smoothed_angular_yaw) * t_vel;
+
+            // === 2. HEADING-AWARE EXTRAPOLATION ===
+            // When turning, rotate velocity by half the yaw change (midpoint approximation for curves)
+            let yaw_delta = smooth.smoothed_angular_yaw * dt;
+            let half_yaw_rot = Quat::from_rotation_y(-yaw_delta * 0.5);
+            let curved_velocity = half_yaw_rot * smooth.smoothed_velocity;
+            smooth.position += curved_velocity * dt;
+
+            // Extrapolate angles
+            smooth.heading = normalize_angle(smooth.heading + smooth.smoothed_angular_yaw * dt);
             smooth.pitch = normalize_angle(smooth.pitch + state.angular_velocity_pitch * dt);
             smooth.roll = normalize_angle(smooth.roll + state.angular_velocity_roll * dt);
 
-            // --- Gentle correction ONLY when a new authoritative snapshot arrives ---
-            // If we correct every render frame while the server pose is unchanged (e.g., render 120fps,
-            // replication 60fps), the vehicle visibly lags/pops at high speed. Detect snapshot changes
-            // and only correct on those edges.
+            // === 3. CONTINUOUS BACKGROUND CORRECTION ===
+            // Always apply a very gentle drift toward server (catches accumulated error)
+            smooth.position = smooth.position.lerp(state.position, t_bg_pos);
+            smooth.heading = lerp_angle(smooth.heading, state.heading, t_bg_rot);
+            smooth.pitch = lerp_angle(smooth.pitch, state.pitch, t_bg_rot);
+            smooth.roll = lerp_angle(smooth.roll, state.roll, t_bg_rot);
+
+            // === 4. ON-SNAPSHOT STRONGER CORRECTION ===
+            // When new server data arrives, apply stronger correction
             let server_updated = state.position != smooth.last_server_position
                 || state.heading != smooth.last_server_heading
                 || state.pitch != smooth.last_server_pitch
@@ -389,6 +543,14 @@ pub fn sync_vehicle_transforms(
                 smooth.last_server_heading = state.heading;
                 smooth.last_server_pitch = state.pitch;
                 smooth.last_server_roll = state.roll;
+            }
+
+            // === 5. ERROR CLAMPING (SAFETY NET) ===
+            // If prediction drifted too far, snap harder to prevent obvious desync
+            let error = (smooth.position - state.position).length();
+            if error > max_error {
+                let emergency_t = ((error - max_error) / max_error).clamp(0.0, 1.0) * 0.5;
+                smooth.position = smooth.position.lerp(state.position, emergency_t);
             }
         }
 

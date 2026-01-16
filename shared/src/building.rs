@@ -13,12 +13,72 @@ pub enum BuildingType {
     #[default]
     TrainStation,
     CoalFactory,
+    // Houses
+    House01,
+    House02,
+    House03,
+    House04,
+    House09,
+    House10,
 }
+
+/// All building types with GLTF models (for collider baking)
+pub const ALL_BUILDING_TYPES: &[BuildingType] = &[
+    BuildingType::House01,
+    BuildingType::House02,
+    BuildingType::House03,
+    BuildingType::House04,
+    BuildingType::House09,
+    BuildingType::House10,
+];
 
 impl BuildingType {
     /// Get all available building types
     pub fn all() -> &'static [BuildingType] {
-        &[BuildingType::TrainStation, BuildingType::CoalFactory]
+        &[
+            BuildingType::TrainStation,
+            BuildingType::CoalFactory,
+            BuildingType::House01,
+            BuildingType::House02,
+            BuildingType::House03,
+            BuildingType::House04,
+            BuildingType::House09,
+            BuildingType::House10,
+        ]
+    }
+
+    /// Stable string id used by the collider bake manifest / database.
+    pub const fn id(&self) -> &'static str {
+        match self {
+            BuildingType::TrainStation => "building_train_station",
+            BuildingType::CoalFactory => "building_coal_factory",
+            BuildingType::House01 => "building_house_01",
+            BuildingType::House02 => "building_house_02",
+            BuildingType::House03 => "building_house_03",
+            BuildingType::House04 => "building_house_04",
+            BuildingType::House09 => "building_house_09",
+            BuildingType::House10 => "building_house_10",
+        }
+    }
+
+    /// GLTF scene path for this building type (used by collider baker).
+    /// Returns None for buildings without GLTF models.
+    pub const fn scene_path(&self) -> Option<&'static str> {
+        match self {
+            BuildingType::TrainStation => None,
+            BuildingType::CoalFactory => None,
+            BuildingType::House01 => Some("buildings/House_01_full.glb#Scene0"),
+            BuildingType::House02 => Some("buildings/House_02_full.glb#Scene0"),
+            BuildingType::House03 => Some("buildings/House_03_full.glb#Scene0"),
+            BuildingType::House04 => Some("buildings/House_04_full.glb#Scene0"),
+            BuildingType::House09 => Some("buildings/House_09_full.glb#Scene0"),
+            BuildingType::House10 => Some("buildings/House_10_full.glb#Scene0"),
+        }
+    }
+
+    /// Check if this building type has a baked collider (GLTF model)
+    pub const fn has_baked_collider(&self) -> bool {
+        self.scene_path().is_some()
     }
 
     /// Get the definition for this building type
@@ -32,6 +92,7 @@ impl BuildingType {
                 height: 6.0,
                 flatten_radius: 2.0, // Extra 2m around footprint for smooth transition
                 color: Color::srgb(0.6, 0.5, 0.4), // Brownish
+                model_path: None,
             },
             BuildingType::CoalFactory => BuildingDef {
                 building_type: *self,
@@ -41,6 +102,68 @@ impl BuildingType {
                 height: 8.0,
                 flatten_radius: 2.0,
                 color: Color::srgb(0.3, 0.3, 0.35), // Dark gray
+                model_path: None,
+            },
+            // Houses - small residential buildings
+            BuildingType::House01 => BuildingDef {
+                building_type: *self,
+                display_name: "Small House",
+                cost: &[(ItemType::Wood, 10), (ItemType::Stone, 5)],
+                footprint: Vec2::new(6.0, 6.0),
+                height: 5.0,
+                flatten_radius: 1.5,
+                color: Color::srgb(0.7, 0.6, 0.5),
+                model_path: Some("buildings/House_01_full.glb#Scene0"),
+            },
+            BuildingType::House02 => BuildingDef {
+                building_type: *self,
+                display_name: "Cottage",
+                cost: &[(ItemType::Wood, 12), (ItemType::Stone, 6)],
+                footprint: Vec2::new(6.0, 7.0),
+                height: 5.0,
+                flatten_radius: 1.5,
+                color: Color::srgb(0.6, 0.5, 0.4),
+                model_path: Some("buildings/House_02_full.glb#Scene0"),
+            },
+            BuildingType::House03 => BuildingDef {
+                building_type: *self,
+                display_name: "Farmhouse",
+                cost: &[(ItemType::Wood, 14), (ItemType::Stone, 8)],
+                footprint: Vec2::new(7.0, 8.0),
+                height: 6.0,
+                flatten_radius: 1.5,
+                color: Color::srgb(0.65, 0.55, 0.45),
+                model_path: Some("buildings/House_03_full.glb#Scene0"),
+            },
+            BuildingType::House04 => BuildingDef {
+                building_type: *self,
+                display_name: "Village House",
+                cost: &[(ItemType::Wood, 12), (ItemType::Stone, 7)],
+                footprint: Vec2::new(6.0, 7.0),
+                height: 5.5,
+                flatten_radius: 1.5,
+                color: Color::srgb(0.6, 0.5, 0.45),
+                model_path: Some("buildings/House_04_full.glb#Scene0"),
+            },
+            BuildingType::House09 => BuildingDef {
+                building_type: *self,
+                display_name: "Large House",
+                cost: &[(ItemType::Wood, 18), (ItemType::Stone, 12)],
+                footprint: Vec2::new(8.0, 9.0),
+                height: 7.0,
+                flatten_radius: 2.0,
+                color: Color::srgb(0.55, 0.5, 0.45),
+                model_path: Some("buildings/House_09_full.glb#Scene0"),
+            },
+            BuildingType::House10 => BuildingDef {
+                building_type: *self,
+                display_name: "Manor",
+                cost: &[(ItemType::Wood, 25), (ItemType::Stone, 18)],
+                footprint: Vec2::new(10.0, 12.0),
+                height: 8.0,
+                flatten_radius: 2.5,
+                color: Color::srgb(0.5, 0.45, 0.4),
+                model_path: Some("buildings/House_10_full.glb#Scene0"),
             },
         }
     }
@@ -64,8 +187,10 @@ pub struct BuildingDef {
     pub height: f32,
     /// Extra radius around footprint for terrain flattening (smooth transition)
     pub flatten_radius: f32,
-    /// Building color (for dummy mesh)
+    /// Building color (for dummy mesh fallback)
     pub color: Color,
+    /// Optional GLTF model path (if None, uses generated box mesh)
+    pub model_path: Option<&'static str>,
 }
 
 impl BuildingDef {

@@ -289,19 +289,6 @@ pub fn drop_inventory_on_death(
     }
 }
 
-/// Restore inventory when player respawns
-pub fn restore_inventory_on_respawn(
-    mut players: Query<(&Player, &mut Inventory, &Health), Changed<Health>>,
-) {
-    for (player, mut inventory, health) in players.iter_mut() {
-        // Check if player just respawned (health went from 0 to full)
-        if !health.is_dead() && inventory.is_empty() {
-            info!("Player {:?} respawned, restoring starting inventory", player.client_id);
-            *inventory = Inventory::with_starting_items();
-        }
-    }
-}
-
 /// Spawn a ground item in the world
 pub fn spawn_ground_item(
     commands: &mut Commands,

@@ -11,7 +11,7 @@ use shared::PropRenderTuning;
 use std::collections::HashMap;
 
 use crate::terrain::LoadedChunks;
-use crate::systems::ClientWorldRoot;
+use crate::systems::{ClientWorldRoot, GraphicsSettings};
 use crate::states::GameState;
 use shared::weapons::WeaponDebugMode;
 
@@ -404,7 +404,10 @@ fn apply_prop_render_tuning(
     new_meshes: Query<Entity, Added<Mesh3d>>,
     parents: Query<&ChildOf>,
     tunings: Query<&PropRenderTuning>,
+    settings: Res<GraphicsSettings>,
 ) {
+    let prop_multiplier = settings.prop_render_multiplier;
+
     for mesh_entity in new_meshes.iter() {
         // Walk up the hierarchy until we find an ancestor with `PropRenderTuning`.
         let mut current = mesh_entity;
@@ -424,7 +427,9 @@ fn apply_prop_render_tuning(
             commands.entity(mesh_entity).insert(NotShadowCaster);
         }
         if let Some(end) = tuning.visible_end_distance {
-            commands.entity(mesh_entity).insert(VisibilityRange::abrupt(0.0, end));
+            // Apply prop render multiplier to scale visibility range
+            let scaled_end = end * prop_multiplier;
+            commands.entity(mesh_entity).insert(VisibilityRange::abrupt(0.0, scaled_end));
         }
     }
 }

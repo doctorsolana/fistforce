@@ -7,3 +7,4 @@ edition = "2021"
 bevy = { workspace = true }
 lightyear = { workspace = true }
 shared = { path = "../shared" }
+bincode = "1.3"

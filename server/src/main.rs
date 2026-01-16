@@ -9,6 +9,7 @@ mod weapons;
 mod world;
 mod colliders;
 mod inventory;
+mod persistence;
 
 use bevy::prelude::*;
 use bevy::app::ScheduleRunnerPlugin;
@@ -16,13 +17,14 @@ use lightyear::prelude::*;
 use lightyear::prelude::server::*;
 // UDP/Netcode types re-exported through prelude::server (when features enabled)
 use shared::{
-    protocol::*, ProtocolPlugin, WorldTerrain, 
+    protocol::*, ProtocolPlugin, WorldTerrain,
     Vehicle, VehicleType, VehicleState, VehicleDriver,
     PRIVATE_KEY, PROTOCOL_ID, SERVER_PORT, get_server_bind_addr,
 };
 use std::net::{SocketAddr, ToSocketAddrs};
 
 use systems::ClientInputs;
+use persistence::PlayerProfiles;
 
 /// Marker for our server entity
 #[derive(Component)]
@@ -91,27 +93,29 @@ fn spawn_vehicles_once(
     
     for (bike_x, bike_z) in bike_positions {
         let ground_y = terrain.get_height(bike_x, bike_z);
-    let spawn_height = ground_y + 5.0;
-    
-    commands.spawn((
-        Vehicle { vehicle_type: VehicleType::Motorbike },
-        VehicleState {
-            position: Vec3::new(bike_x, spawn_height, bike_z),
-            velocity: Vec3::ZERO,
-            heading: 0.0,
-            pitch: 0.0,
-            roll: 0.0,
-            angular_velocity_yaw: 0.0,
-            angular_velocity_pitch: 0.0,
-            angular_velocity_roll: 0.0,
-            grounded: false,
-        },
-        VehicleDriver { driver_id: None },
-        Replicate::new(ReplicationMode::SingleServer(NetworkTarget::All)),
-    ));
+        let spawn_height = ground_y + 5.0;
+        
+        commands.spawn((
+            Vehicle { vehicle_type: VehicleType::Motorbike },
+            VehicleState {
+                position: Vec3::new(bike_x, spawn_height, bike_z),
+                velocity: Vec3::ZERO,
+                heading: 0.0,
+                pitch: 0.0,
+                roll: 0.0,
+                angular_velocity_yaw: 0.0,
+                angular_velocity_pitch: 0.0,
+                angular_velocity_roll: 0.0,
+                grounded: false,
+            },
+            VehicleDriver { driver_id: None },
+            Replicate::new(ReplicationMode::SingleServer(NetworkTarget::All)),
+        ));
 
         info!("Spawned motorbike at ({}, {}) - dropping from height {}!", bike_x, bike_z, spawn_height);
     }
+
+    // Car removed - physics needs rework
 }
 
 /// Check if server is started (run condition)
@@ -139,12 +143,17 @@ fn main() {
 
     // Server-side input cache
     app.init_resource::<ClientInputs>();
-    
+
     // Chest open tracking
     app.init_resource::<inventory::OpenChests>();
-    
+
     // Delta chunk entity tracking for terrain modifications
     app.init_resource::<building::DeltaChunkEntities>();
+
+    // Player profile persistence
+    app.insert_resource(PlayerProfiles::new(
+        std::path::PathBuf::from("server_data/players")
+    ));
 
     // Lightyear server plugins (tick_duration = 60Hz)
     app.add_plugins(ServerPlugins {
@@ -156,9 +165,12 @@ fn main() {
 
     // Game systems
     app.add_systems(Startup, (world::setup_world, colliders::load_baked_colliders, spawn_server));
-    
+
     // Start server after spawning
     app.add_systems(Update, start_server);
+
+    // Disconnect handler - uses Bevy observer to trigger on LinkOf removal
+    app.add_observer(systems::handle_disconnections);
     
     // Spawn WorldTime after server is started
     app.add_systems(Update, world::spawn_world_time_once.run_if(server_is_started));
@@ -171,6 +183,8 @@ fn main() {
     app.add_systems(Update, inventory::spawn_test_items.run_if(server_is_started));
     // Spawn test building after server is started
     app.add_systems(Update, building::spawn_test_building.run_if(server_is_started));
+    // Spawn medieval town after server is started
+    app.add_systems(Update, building::spawn_medieval_town.run_if(server_is_started));
 
     // Fixed tick: receive inputs, handle interactions, then simulate everyone.
     // Split into multiple system groups to avoid tuple limit
@@ -184,8 +198,9 @@ fn main() {
             colliders::invalidate_colliders_for_new_buildings,
             // Structure collider streaming (desert settlements)
             colliders::stream_structure_colliders,
+            systems::ensure_car_suspension_state,
             systems::handle_connections,
-            systems::handle_disconnections,
+            systems::handle_player_name_submission,
             systems::receive_client_input,
             systems::handle_vehicle_interactions,
             systems::simulate_vehicles,
@@ -193,6 +208,8 @@ fn main() {
             // Death & respawn
             systems::check_player_deaths,
             systems::tick_respawn_timers,
+            // Auto-save
+            systems::periodic_player_save,
         )
             .chain()
             .run_if(server_is_started),
@@ -201,8 +218,12 @@ fn main() {
     app.add_systems(
         FixedUpdate,
         (
-            // NPC AI
+            // NPC AI - damage reaction before AI tick
+            npc::react_to_damage,
             npc::tick_npc_ai,
+            // Dead NPC cleanup (add despawn timer, tick timer and despawn)
+            npc::add_despawn_timer_to_dead_npcs,
+            npc::tick_dead_npc_despawn_timers,
             // World prop collisions (server-authoritative)
             colliders::resolve_vehicle_static_collisions,
             colliders::resolve_player_static_collisions,
@@ -235,9 +256,8 @@ fn main() {
             weapons::detect_bullet_hits,
             weapons::detect_bullet_world_hits,
             weapons::cleanup_bullets,
-            // Inventory death/respawn
+            // Inventory death
             inventory::drop_inventory_on_death,
-            inventory::restore_inventory_on_respawn,
         )
             .chain()
             .run_if(server_is_started),

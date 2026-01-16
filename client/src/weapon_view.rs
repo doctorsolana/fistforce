@@ -62,8 +62,8 @@ pub fn handle_weapon_switch(
     mut local_hotbar: Query<&mut HotbarSelection, With<LocalPlayer>>,
     input_state: Res<InputState>,
 ) {
-    // Don't switch weapons while in vehicle
-    if input_state.in_vehicle {
+    // Don't switch weapons while in vehicle or build mode
+    if input_state.in_vehicle || input_state.build_mode_active {
         return;
     }
     

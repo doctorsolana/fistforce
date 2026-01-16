@@ -3,7 +3,7 @@
 //! Sand/dust trail particles for vehicles.
 
 use bevy::prelude::*;
-use shared::{motorbike, Vehicle, VehicleState};
+use shared::{vehicle_def, Vehicle, VehicleState};
 
 // =============================================================================
 // COMPONENTS & RESOURCES
@@ -72,12 +72,13 @@ pub fn setup_particle_assets(
 pub fn spawn_sand_particles(
     mut commands: Commands,
     particle_assets: Option<Res<ParticleAssets>>,
-    vehicles: Query<(&VehicleState, &Transform), With<Vehicle>>,
+    vehicles: Query<(&Vehicle, &VehicleState, &Transform)>,
     time: Res<Time>,
 ) {
     let Some(assets) = particle_assets else { return };
     
-    for (state, transform) in vehicles.iter() {
+    for (vehicle, state, transform) in vehicles.iter() {
+        let def = vehicle_def(vehicle.vehicle_type);
         // Only spawn particles when grounded and moving
         if !state.grounded {
             continue;
@@ -92,7 +93,7 @@ pub fn spawn_sand_particles(
         
         // Spawn rate increases with speed
         // At 10 m/s: ~15 particles/sec, at max speed: ~40 particles/sec
-        let speed_factor = (speed / motorbike::MAX_SPEED).clamp(0.0, 1.0);
+        let speed_factor = (speed / def.max_speed).clamp(0.0, 1.0);
         let spawn_rate = 15.0 + speed_factor * 25.0;
         let spawn_chance = spawn_rate * time.delta_secs();
         
@@ -102,13 +103,13 @@ pub fn spawn_sand_particles(
             continue;
         }
         
-        // Spawn position: behind the bike, slightly to the sides
+        // Spawn position: behind the vehicle, slightly to the sides
         let bike_rotation = transform.rotation;
-        let back_offset = bike_rotation * Vec3::new(0.0, 0.0, 1.2); // Behind the bike
+        let back_offset = bike_rotation * Vec3::new(0.0, 0.0, def.size.z * 0.6); // Behind the vehicle
         
         // Add randomness to spawn position
-        let random_x = ((time.elapsed_secs() * 3456.789).fract() - 0.5) * 0.8;
-        let random_z = ((time.elapsed_secs() * 7891.234).fract() - 0.5) * 0.3;
+        let random_x = ((time.elapsed_secs() * 3456.789).fract() - 0.5) * (def.size.x * 0.4);
+        let random_z = ((time.elapsed_secs() * 7891.234).fract() - 0.5) * (def.size.z * 0.2);
         let side_offset = bike_rotation * Vec3::new(random_x, 0.0, random_z);
         
         let spawn_pos = transform.translation + back_offset + side_offset;
