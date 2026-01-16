@@ -18,6 +18,10 @@
 /dist/
 *.app
 *.dmg
+*.zip
+
+# Server data (player saves, etc)
+server_data/
 
 # Logs
 *.log
