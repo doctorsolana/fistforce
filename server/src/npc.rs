@@ -12,8 +12,8 @@ use lightyear::prelude::server::Started;
 use shared::{
     ground_clearance_center, npc_capsule_endpoints, npc_head_center, Npc, NpcArchetype, NpcPosition,
     NpcRotation, NpcDamageEvent, WorldTerrain, FIXED_TIMESTEP_HZ, Health,
-    BuildingType, PlacedBuilding, BuildingPosition,
-    building::point_in_any_build_zone,
+    PlacedBuilding, BuildingPosition,
+    SpatialObstacleGrid, ObstacleEntry,
 };
 
 // =============================================================================
@@ -22,6 +22,53 @@ use shared::{
 
 /// Time in seconds before a dead NPC despawns (5 minutes)
 const DEAD_NPC_DESPAWN_TIME: f32 = 5.0 * 60.0;
+
+// =============================================================================
+// SPATIAL GRID (obstacle caching for O(1) lookups)
+// =============================================================================
+
+/// Tracks the last known count of buildings to detect changes.
+#[derive(Resource, Default)]
+pub struct ObstacleGridState {
+    pub last_building_count: usize,
+}
+
+/// Sync the SpatialObstacleGrid with current buildings.
+/// Only rebuilds when buildings are added/removed (not every frame).
+pub fn sync_obstacle_grid(
+    mut grid: ResMut<SpatialObstacleGrid>,
+    mut state: ResMut<ObstacleGridState>,
+    buildings: Query<(&PlacedBuilding, &BuildingPosition)>,
+) {
+    let current_count = buildings.iter().count();
+
+    // Only rebuild if building count changed
+    if current_count == state.last_building_count && !grid.is_empty() {
+        return;
+    }
+
+    state.last_building_count = current_count;
+    grid.clear();
+
+    for (building, pos) in buildings.iter() {
+        let def = building.building_type.definition();
+        let half_extents = Vec2::new(
+            def.footprint.x / 2.0 + def.flatten_radius,
+            def.footprint.y / 2.0 + def.flatten_radius,
+        );
+
+        grid.insert(ObstacleEntry {
+            center: Vec2::new(pos.0.x, pos.0.z),
+            half_extents,
+            rotation: building.rotation,
+            obstacle_type: building.building_type as u32,
+        });
+    }
+
+    if current_count > 0 {
+        trace!("Rebuilt spatial grid with {} obstacles", current_count);
+    }
+}
 
 // =============================================================================
 // SPAWN
@@ -391,16 +438,10 @@ pub fn react_to_damage(
 /// Tick wandering NPC AI (server-authoritative).
 pub fn tick_npc_ai(
     terrain: Res<WorldTerrain>,
+    obstacle_grid: Res<SpatialObstacleGrid>,
     mut npcs: Query<(&Npc, &mut NpcPosition, &mut NpcRotation, &Health, &mut NpcWander)>,
-    buildings: Query<(&PlacedBuilding, &BuildingPosition)>,
 ) {
     let dt = 1.0 / FIXED_TIMESTEP_HZ as f32;
-
-    // Build list of buildings for pathfinding obstacle detection
-    let building_list: Vec<(Vec3, BuildingType, f32)> = buildings
-        .iter()
-        .map(|(b, p)| (p.0, b.building_type, b.rotation))
-        .collect();
 
     for (npc, mut pos, mut rot, health, mut wander) in npcs.iter_mut() {
         if health.is_dead() {
@@ -420,7 +461,7 @@ pub fn tick_npc_ai(
                     &mut pos,
                     &mut rot,
                     &terrain,
-                    &building_list,
+                    &obstacle_grid,
                     from_pos,
                     timer,
                     boost,
@@ -429,7 +470,7 @@ pub fn tick_npc_ai(
                 );
             }
             NpcState::Idle => {
-                tick_idle_state(&mut wander, &mut rot, &terrain, &building_list, pos.0, dt, npc.id);
+                tick_idle_state(&mut wander, &mut rot, &terrain, &obstacle_grid, pos.0, dt, npc.id);
             }
             NpcState::Walking => {
                 tick_walking_state(&mut wander, &mut pos, &mut rot, &terrain, dt, npc.id);
@@ -443,7 +484,7 @@ fn tick_idle_state(
     wander: &mut NpcWander,
     rot: &mut NpcRotation,
     terrain: &WorldTerrain,
-    buildings: &[(Vec3, BuildingType, f32)],
+    obstacles: &SpatialObstacleGrid,
     current_pos: Vec3,
     dt: f32,
     npc_id: u64,
@@ -469,17 +510,17 @@ fn tick_idle_state(
             wander.state = NpcState::Walking;
             trace!("NPC {} resuming walk after pause ({} waypoints remaining)", npc_id, wander.path.len() - wander.waypoint);
         } else {
-            // Pick new wander target (avoiding buildings)
+            // Pick new wander target (avoiding obstacles)
             wander.target = pick_random_target(
                 terrain,
-                buildings,
+                obstacles,
                 wander.home,
                 current_pos,
                 NPC_WANDER_RADIUS,
                 NPC_MIN_TARGET_DIST,
                 &mut wander.rng,
             );
-            wander.path = find_path_a_star(terrain, buildings, current_pos, wander.target);
+            wander.path = find_path_a_star(terrain, obstacles, current_pos, wander.target);
             wander.waypoint = 0;
 
             if wander.path.is_empty() {
@@ -591,7 +632,7 @@ fn tick_fleeing_state(
     pos: &mut NpcPosition,
     rot: &mut NpcRotation,
     terrain: &WorldTerrain,
-    buildings: &[(Vec3, BuildingType, f32)],
+    obstacles: &SpatialObstacleGrid,
     from_position: Vec3,
     mut flee_timer: f32,
     panic_speed_boost: f32,
@@ -622,8 +663,8 @@ fn tick_fleeing_state(
         let flee_y = terrain.get_height(flee_target_xz.x, flee_target_xz.y);
         let flee_target = Vec3::new(flee_target_xz.x, flee_y + ground_clearance_center(), flee_target_xz.y);
 
-        // Try to pathfind to flee target (avoiding buildings)
-        wander.path = find_path_a_star(terrain, buildings, pos.0, flee_target);
+        // Try to pathfind to flee target (avoiding obstacles)
+        wander.path = find_path_a_star(terrain, obstacles, pos.0, flee_target);
         wander.waypoint = 0;
 
         if wander.path.is_empty() {
@@ -724,7 +765,7 @@ pub fn tick_dead_npc_despawn_timers(
 
 fn pick_random_target(
     terrain: &WorldTerrain,
-    buildings: &[(Vec3, BuildingType, f32)],
+    obstacles: &SpatialObstacleGrid,
     home: Vec3,
     current_pos: Vec3,
     max_radius: f32,
@@ -733,7 +774,7 @@ fn pick_random_target(
 ) -> Vec3 {
     // Try multiple times to pick a target that's:
     // - At least min_dist away from current position
-    // - Not inside any building footprint
+    // - Not inside any obstacle footprint
     for _ in 0..16 {
         let angle = rng.next_f32() * std::f32::consts::TAU;
         // Bias toward further distances (use sqrt for uniform disk, skip for outer ring bias)
@@ -743,10 +784,10 @@ fn pick_random_target(
         let y = terrain.get_height(x, z) + ground_clearance_center();
         let candidate = Vec3::new(x, y, z);
 
-        // Check if candidate is inside any building footprint
+        // Check if candidate is inside any obstacle footprint (O(1) spatial lookup)
         let candidate_xz = Vec2::new(candidate.x, candidate.z);
-        if point_in_any_build_zone(candidate_xz, buildings) {
-            continue; // Skip - target is inside a building
+        if obstacles.point_blocked(candidate_xz) {
+            continue; // Skip - target is inside an obstacle
         }
 
         let dist_from_current = Vec2::new(candidate.x - current_pos.x, candidate.z - current_pos.z).length();
@@ -755,7 +796,7 @@ fn pick_random_target(
         }
     }
 
-    // Fallback: just pick something in the outer ring (even if inside building - pathfinding will avoid)
+    // Fallback: just pick something in the outer ring (even if inside obstacle - pathfinding will avoid)
     let angle = rng.next_f32() * std::f32::consts::TAU;
     let r = max_radius * 0.7 + max_radius * 0.3 * rng.next_f32();
     let x = home.x + angle.cos() * r;
@@ -797,7 +838,7 @@ fn heuristic(a: GridPos, b: GridPos) -> f32 {
 
 fn find_path_a_star(
     terrain: &WorldTerrain,
-    buildings: &[(Vec3, BuildingType, f32)],
+    obstacles: &SpatialObstacleGrid,
     start_world: Vec3,
     goal_world: Vec3,
 ) -> Vec<Vec3> {
@@ -900,11 +941,11 @@ fn find_path_a_star(
                 continue; // too steep / cliff
             }
 
-            // Check if neighbor is inside any building footprint
+            // Check if neighbor is inside any obstacle footprint (O(1) spatial lookup)
             let neighbor_world = grid_to_world(terrain, n);
             let neighbor_xz = Vec2::new(neighbor_world.x, neighbor_world.z);
-            if point_in_any_build_zone(neighbor_xz, buildings) {
-                continue; // Skip - inside a building
+            if obstacles.point_blocked(neighbor_xz) {
+                continue; // Skip - inside an obstacle
             }
 
             let diag = (n.x != current.x) && (n.z != current.z);

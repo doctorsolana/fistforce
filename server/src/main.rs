@@ -20,6 +20,7 @@ use shared::{
     protocol::*, ProtocolPlugin, WorldTerrain,
     Vehicle, VehicleType, VehicleState, VehicleDriver,
     PRIVATE_KEY, PROTOCOL_ID, SERVER_PORT, get_server_bind_addr,
+    SpatialObstacleGrid,
 };
 use std::net::{SocketAddr, ToSocketAddrs};
 
@@ -150,6 +151,10 @@ fn main() {
     // Delta chunk entity tracking for terrain modifications
     app.init_resource::<building::DeltaChunkEntities>();
 
+    // Spatial grid for O(1) obstacle lookups (used by NPC AI pathfinding)
+    app.init_resource::<SpatialObstacleGrid>();
+    app.init_resource::<npc::ObstacleGridState>();
+
     // Player profile persistence
     app.insert_resource(PlayerProfiles::new(
         std::path::PathBuf::from("server_data/players")
@@ -218,6 +223,8 @@ fn main() {
     app.add_systems(
         FixedUpdate,
         (
+            // Spatial grid sync (O(1) obstacle lookups for pathfinding)
+            npc::sync_obstacle_grid,
             // NPC AI - damage reaction before AI tick
             npc::react_to_damage,
             npc::tick_npc_ai,
