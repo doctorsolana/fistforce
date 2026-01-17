@@ -9,7 +9,10 @@ use bevy::diagnostic::{DiagnosticsStore, EntityCountDiagnosticsPlugin, FrameTime
 use bevy::window::{CursorGrabMode, CursorOptions, PrimaryWindow};
 use lightyear::prelude::*;
 use shared::{
-    weapons::{ballistics, WeaponDebugMode, WeaponType},
+    weapons::{
+        ballistics, WeaponDebugMode, WeaponType,
+        RECOIL_RECOVERY_SPEED, RECOIL_BURST_RESET_TIME, RECOIL_ADS_MULTIPLIER, RECOIL_ACCUMULATION_MULT,
+    },
     Bullet, BulletImpact, BulletImpactSurface, BulletVelocity, EquippedWeapon, HitConfirm, LocalTracer,
     ChunkCoord, LocalPlayer, Player, PlayerPosition, ShootRequest, ReloadRequest, ReliableChannel, WorldTerrain,
     Vehicle,
@@ -120,11 +123,7 @@ pub struct ReloadState {
     pub reload_requested_this_frame: bool,
 }
 
-// Recoil settings
-const RECOIL_RECOVERY_SPEED: f32 = 4.0; // How fast recoil recovers (radians/sec)
-const RECOIL_BURST_RESET_TIME: f32 = 0.35; // Time without shooting to reset burst counter
-const RECOIL_ADS_MULTIPLIER: f32 = 0.5; // ADS reduces recoil by 50%
-const RECOIL_ACCUMULATION_MULT: f32 = 1.15; // Each shot in burst adds 15% more recoil
+// Recoil settings are now imported from shared::weapons
 
 /// Component for bullet impact markers
 #[derive(Component)]

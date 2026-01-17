@@ -9,7 +9,7 @@ use shared::{
     GroundItem, GroundItemPosition, Inventory, ItemType, ItemStack,
     PickupRequest, DropRequest,
     InventoryMoveRequest, SelectHotbarSlot, HotbarSelection,
-    INVENTORY_SLOTS, HOTBAR_SLOTS, CHEST_SLOTS,
+    INVENTORY_SLOTS, HOTBAR_SLOTS, CHEST_SLOTS, PICKUP_RANGE, CHEST_RANGE,
     Player, PlayerPosition, Health,
     WorldTerrain,
     EquippedWeapon, WeaponType,
@@ -17,9 +17,6 @@ use shared::{
     OpenChestRequest, CloseChestRequest, ChestTransferRequest,
 };
 use std::collections::HashMap;
-
-/// Distance within which a player can pick up an item
-const PICKUP_RANGE: f32 = 3.0;
 
 // =============================================================================
 // HOTBAR / EQUIPMENT
@@ -373,9 +370,6 @@ pub struct TestItemsSpawned;
 // =============================================================================
 // CHEST / STORAGE
 // =============================================================================
-
-/// Distance within which a player can interact with a chest
-const CHEST_RANGE: f32 = 3.5;
 
 /// Tracks which player has which chest open (PeerId -> chest entity)
 #[derive(Resource, Default)]

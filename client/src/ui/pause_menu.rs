@@ -10,7 +10,7 @@ use bevy::window::{CursorGrabMode, CursorOptions, PrimaryWindow};
 use lightyear::prelude::client::*;
 
 use crate::states::GameState;
-use crate::systems::GraphicsSettings;
+use crate::systems::{GraphicsSettings, InputSettings};
 use crate::GameClient;
 use super::styles::*;
 
@@ -28,6 +28,7 @@ impl Plugin for PauseMenuPlugin {
                 handle_pause_actions,
                 handle_graphics_toggles,
                 handle_slider_steps,
+                handle_input_slider_steps,
                 animate_menu_transition,
             )
                 .run_if(in_state(GameState::Paused)),
@@ -44,6 +45,7 @@ impl Plugin for PauseMenuPlugin {
 #[derive(Resource, Default)]
 struct PauseMenuState {
     graphics_open: bool,
+    controls_open: bool,
     /// Animation progress: 0.0 = closed (centered), 1.0 = open (shifted left)
     transition: f32,
 }
@@ -64,11 +66,16 @@ struct MainMenuColumn;
 #[derive(Component)]
 struct GraphicsSettingsPanel;
 
+/// Marker for the controls settings panel
+#[derive(Component)]
+struct ControlsSettingsPanel;
+
 /// Pause menu button actions
 #[derive(Component, Clone, Copy)]
 enum PauseButton {
     Resume,
     Graphics,
+    Controls,
     Disconnect,
     Exit,
 }
@@ -104,7 +111,28 @@ struct SliderStep {
     delta: i32, // +1 or -1
 }
 
-fn spawn_pause_menu(mut commands: Commands, settings: Res<GraphicsSettings>) {
+/// Input/controls slider types
+#[derive(Component, Clone, Copy, Debug)]
+enum InputSliderControl {
+    MouseSensitivity,
+}
+
+/// Marker for input slider value text
+#[derive(Component)]
+struct InputSliderValueText(InputSliderControl);
+
+/// Step direction for input slider buttons
+#[derive(Component, Clone, Copy)]
+struct InputSliderStep {
+    control: InputSliderControl,
+    delta: i32, // +1 or -1
+}
+
+fn spawn_pause_menu(
+    mut commands: Commands,
+    settings: Res<GraphicsSettings>,
+    input_settings: Res<InputSettings>,
+) {
     // Full-screen darkened overlay
     commands
         .spawn((
@@ -163,6 +191,9 @@ fn spawn_pause_menu(mut commands: Commands, settings: Res<GraphicsSettings>) {
                             // Graphics button
                             spawn_button(col, "GRAPHICS", PauseButton::Graphics);
 
+                            // Controls button
+                            spawn_button(col, "CONTROLS", PauseButton::Controls);
+
                             // Disconnect button
                             spawn_button(col, "DISCONNECT", PauseButton::Disconnect);
 
@@ -186,6 +217,9 @@ fn spawn_pause_menu(mut commands: Commands, settings: Res<GraphicsSettings>) {
 
                     // Graphics settings panel (hidden by default, appears to the right)
                     spawn_graphics_panel(container, &settings);
+
+                    // Controls settings panel (hidden by default, appears to the right)
+                    spawn_controls_panel(container, &input_settings);
                 });
         });
 }
@@ -442,6 +476,171 @@ fn spawn_slider(parent: &mut ChildSpawnerCommands<'_>, label: &str, control: Sli
         });
 }
 
+fn spawn_controls_panel(parent: &mut ChildSpawnerCommands<'_>, settings: &InputSettings) {
+    parent
+        .spawn((
+            ControlsSettingsPanel,
+            Node {
+                flex_direction: FlexDirection::Column,
+                justify_content: JustifyContent::Center,
+                align_items: AlignItems::FlexStart,
+                padding: UiRect::all(Val::Px(24.0)),
+                min_width: Val::Px(0.0),
+                // Start hidden so it doesn't affect layout
+                display: Display::None,
+                ..default()
+            },
+            BackgroundColor(Color::srgba(0.06, 0.055, 0.05, 0.95)),
+            BorderRadius::all(Val::Px(12.0)),
+        ))
+        .with_children(|panel| {
+            // Panel title
+            panel.spawn((
+                Text::new("CONTROLS"),
+                TextFont {
+                    font_size: 26.0,
+                    ..default()
+                },
+                TextColor(ACCENT_COLOR),
+                Node {
+                    margin: UiRect::bottom(Val::Px(8.0)),
+                    ..default()
+                },
+            ));
+
+            // Help text
+            panel.spawn((
+                Text::new("Adjust input settings"),
+                TextFont {
+                    font_size: 12.0,
+                    ..default()
+                },
+                TextColor(TEXT_MUTED),
+                Node {
+                    margin: UiRect::bottom(Val::Px(20.0)),
+                    ..default()
+                },
+            ));
+
+            // Mouse sensitivity slider
+            spawn_input_slider(
+                panel,
+                "Mouse Sensitivity",
+                InputSliderControl::MouseSensitivity,
+                &format!("{:.0}%", settings.mouse_sensitivity * 100.0),
+            );
+        });
+}
+
+fn spawn_input_slider(
+    parent: &mut ChildSpawnerCommands<'_>,
+    label: &str,
+    control: InputSliderControl,
+    value: &str,
+) {
+    parent
+        .spawn(Node {
+            flex_direction: FlexDirection::Row,
+            align_items: AlignItems::Center,
+            justify_content: JustifyContent::SpaceBetween,
+            width: Val::Percent(100.0),
+            margin: UiRect::bottom(Val::Px(12.0)),
+            ..default()
+        })
+        .with_children(|row| {
+            // Label
+            row.spawn((
+                Text::new(label),
+                TextFont {
+                    font_size: 18.0,
+                    ..default()
+                },
+                TextColor(TEXT_COLOR),
+                Node {
+                    margin: UiRect::right(Val::Px(20.0)),
+                    ..default()
+                },
+            ));
+
+            // Control row: [-] [value] [+]
+            row.spawn(Node {
+                flex_direction: FlexDirection::Row,
+                align_items: AlignItems::Center,
+                column_gap: Val::Px(8.0),
+                ..default()
+            })
+            .with_children(|controls| {
+                // Minus button
+                controls
+                    .spawn((
+                        Button,
+                        InputSliderStep { control, delta: -1 },
+                        Node {
+                            width: Val::Px(28.0),
+                            height: Val::Px(28.0),
+                            justify_content: JustifyContent::Center,
+                            align_items: AlignItems::Center,
+                            ..default()
+                        },
+                        BackgroundColor(Color::srgb(0.3, 0.3, 0.35)),
+                        BorderRadius::all(Val::Px(4.0)),
+                    ))
+                    .with_children(|btn| {
+                        btn.spawn((
+                            Text::new("-"),
+                            TextFont {
+                                font_size: 18.0,
+                                ..default()
+                            },
+                            TextColor(TEXT_COLOR),
+                        ));
+                    });
+
+                // Value display
+                controls.spawn((
+                    InputSliderValueText(control),
+                    Text::new(value),
+                    TextFont {
+                        font_size: 14.0,
+                        ..default()
+                    },
+                    TextColor(TEXT_COLOR),
+                    Node {
+                        min_width: Val::Px(70.0),
+                        justify_content: JustifyContent::Center,
+                        ..default()
+                    },
+                ));
+
+                // Plus button
+                controls
+                    .spawn((
+                        Button,
+                        InputSliderStep { control, delta: 1 },
+                        Node {
+                            width: Val::Px(28.0),
+                            height: Val::Px(28.0),
+                            justify_content: JustifyContent::Center,
+                            align_items: AlignItems::Center,
+                            ..default()
+                        },
+                        BackgroundColor(Color::srgb(0.3, 0.3, 0.35)),
+                        BorderRadius::all(Val::Px(4.0)),
+                    ))
+                    .with_children(|btn| {
+                        btn.spawn((
+                            Text::new("+"),
+                            TextFont {
+                                font_size: 18.0,
+                                ..default()
+                            },
+                            TextColor(TEXT_COLOR),
+                        ));
+                    });
+            });
+        });
+}
+
 fn despawn_pause_menu(mut commands: Commands, query: Query<Entity, With<PauseMenuRoot>>) {
     for entity in query.iter() {
         commands.entity(entity).despawn();
@@ -450,19 +649,31 @@ fn despawn_pause_menu(mut commands: Commands, query: Query<Entity, With<PauseMen
 
 fn reset_menu_state(mut state: ResMut<PauseMenuState>) {
     state.graphics_open = false;
+    state.controls_open = false;
     state.transition = 0.0;
 }
 
-/// Smoothly animate the menu transition when opening/closing graphics panel
+/// Smoothly animate the menu transition when opening/closing settings panels
 fn animate_menu_transition(
     time: Res<Time>,
     mut state: ResMut<PauseMenuState>,
-    mut container_query: Query<&mut Node, (With<MenuContentContainer>, Without<GraphicsSettingsPanel>)>,
-    mut panel_query: Query<&mut Node, (With<GraphicsSettingsPanel>, Without<MenuContentContainer>)>,
+    mut container_query: Query<
+        &mut Node,
+        (With<MenuContentContainer>, Without<GraphicsSettingsPanel>, Without<ControlsSettingsPanel>),
+    >,
+    mut graphics_panel_query: Query<
+        &mut Node,
+        (With<GraphicsSettingsPanel>, Without<MenuContentContainer>, Without<ControlsSettingsPanel>),
+    >,
+    mut controls_panel_query: Query<
+        &mut Node,
+        (With<ControlsSettingsPanel>, Without<MenuContentContainer>, Without<GraphicsSettingsPanel>),
+    >,
 ) {
-    let target = if state.graphics_open { 1.0 } else { 0.0 };
+    // Determine target based on which panel is open (only one at a time)
+    let target = if state.graphics_open || state.controls_open { 1.0 } else { 0.0 };
     let speed = 10.0; // Animation speed
-    
+
     // Smoothly interpolate toward target
     let diff = target - state.transition;
     if diff.abs() > 0.001 {
@@ -471,21 +682,30 @@ fn animate_menu_transition(
     } else {
         state.transition = target;
     }
-    
-    // Shift the entire content container left when graphics opens
-    // Negative margin moves it left, making room for the graphics panel on the right
-    // Small shift: -80px when fully open
+
+    // Shift the entire content container left when a panel opens
+    // Negative margin moves it left, making room for the panel on the right
     let offset = -80.0 * state.transition;
-    
+
     for mut node in container_query.iter_mut() {
         node.margin.left = Val::Px(offset);
     }
-    
-    // Show/hide the graphics panel and animate its appearance
-    for mut node in panel_query.iter_mut() {
-        if state.transition > 0.01 {
+
+    // Show/hide the graphics panel
+    for mut node in graphics_panel_query.iter_mut() {
+        if state.graphics_open && state.transition > 0.01 {
             node.display = Display::Flex;
-            // Expand width as it appears
+            node.min_width = Val::Px(260.0 * state.transition);
+        } else {
+            node.display = Display::None;
+            node.min_width = Val::Px(0.0);
+        }
+    }
+
+    // Show/hide the controls panel
+    for mut node in controls_panel_query.iter_mut() {
+        if state.controls_open && state.transition > 0.01 {
+            node.display = Display::Flex;
             node.min_width = Val::Px(260.0 * state.transition);
         } else {
             node.display = Display::None;
@@ -496,12 +716,18 @@ fn animate_menu_transition(
 
 fn button_interactions(
     mut buttons: Query<
-        (&Interaction, &mut BackgroundColor, Option<&GraphicsToggle>, Option<&SliderStep>),
+        (
+            &Interaction,
+            &mut BackgroundColor,
+            Option<&GraphicsToggle>,
+            Option<&SliderStep>,
+            Option<&InputSliderStep>,
+        ),
         (Changed<Interaction>, With<Button>),
     >,
     settings: Res<GraphicsSettings>,
 ) {
-    for (interaction, mut bg_color, toggle_opt, slider_opt) in buttons.iter_mut() {
+    for (interaction, mut bg_color, toggle_opt, slider_opt, input_slider_opt) in buttons.iter_mut() {
         // For toggle buttons, use green/red based on state
         if let Some(toggle) = toggle_opt {
             let enabled = match toggle {
@@ -522,8 +748,8 @@ fn button_interactions(
                 Interaction::Hovered => BackgroundColor(base_color.lighter(0.08)),
                 Interaction::None => BackgroundColor(base_color),
             };
-        } else if slider_opt.is_some() {
-            // Slider step buttons ([-] [+])
+        } else if slider_opt.is_some() || input_slider_opt.is_some() {
+            // Slider step buttons ([-] [+]) for both graphics and input settings
             let base_color = Color::srgb(0.3, 0.3, 0.35);
             *bg_color = match interaction {
                 Interaction::Pressed => BackgroundColor(base_color.lighter(0.2)),
@@ -556,8 +782,22 @@ fn handle_pause_actions(
                     next_state.set(GameState::Playing);
                 }
                 PauseButton::Graphics => {
-                    // Toggle the graphics panel (animation handled by animate_menu_transition)
-                    menu_state.graphics_open = !menu_state.graphics_open;
+                    // Toggle the graphics panel (close controls if open)
+                    if menu_state.graphics_open {
+                        menu_state.graphics_open = false;
+                    } else {
+                        menu_state.controls_open = false;
+                        menu_state.graphics_open = true;
+                    }
+                }
+                PauseButton::Controls => {
+                    // Toggle the controls panel (close graphics if open)
+                    if menu_state.controls_open {
+                        menu_state.controls_open = false;
+                    } else {
+                        menu_state.graphics_open = false;
+                        menu_state.controls_open = true;
+                    }
                 }
                 PauseButton::Disconnect => {
                     info!("Disconnecting from server...");
@@ -673,6 +913,46 @@ fn handle_slider_steps(
                         // Update text
                         for (text_control, mut text) in slider_texts.iter_mut() {
                             if matches!(text_control.0, SliderControl::PropDistance) {
+                                text.0 = format!("{:.0}%", new_val * 100.0);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn handle_input_slider_steps(
+    buttons: Query<(&Interaction, &InputSliderStep), Changed<Interaction>>,
+    mut settings: ResMut<InputSettings>,
+    mut slider_texts: Query<(&InputSliderValueText, &mut Text)>,
+) {
+    for (interaction, step) in buttons.iter() {
+        if *interaction == Interaction::Pressed {
+            match step.control {
+                InputSliderControl::MouseSensitivity => {
+                    // Mouse sensitivity: 10%-300% in 10% steps
+                    let steps: Vec<f32> = (1..=30).map(|i| i as f32 * 0.1).collect();
+                    let current_idx = steps
+                        .iter()
+                        .position(|&x| (x - settings.mouse_sensitivity).abs() < 0.05)
+                        .unwrap_or(9); // Default to 1.0 (index 9) if not found
+
+                    let new_idx = if step.delta > 0 {
+                        (current_idx + 1).min(steps.len() - 1)
+                    } else {
+                        current_idx.saturating_sub(1)
+                    };
+
+                    let new_val = steps[new_idx];
+                    if (new_val - settings.mouse_sensitivity).abs() > 0.01 {
+                        settings.mouse_sensitivity = new_val;
+                        info!("Mouse sensitivity = {:.0}%", new_val * 100.0);
+
+                        // Update text
+                        for (text_control, mut text) in slider_texts.iter_mut() {
+                            if matches!(text_control.0, InputSliderControl::MouseSensitivity) {
                                 text.0 = format!("{:.0}%", new_val * 100.0);
                             }
                         }

@@ -7,6 +7,7 @@ use bevy::app::AppExit;
 use bevy::input::keyboard::{Key, KeyboardInput};
 use bevy::input::ButtonState;
 use serde::Deserialize;
+use arboard::Clipboard;
 
 use crate::states::GameState;
 use super::styles::*;
@@ -323,7 +324,7 @@ fn spawn_main_menu(
                     
                     // Helper text
                     ip_section.spawn((
-                        Text::new("Click to edit • Select preset below"),
+                        Text::new("Click to edit • Ctrl+V to paste • Select preset below"),
                         TextFont {
                             font_size: 12.0,
                             ..default()
@@ -606,21 +607,28 @@ fn handle_ip_keyboard_input(
     mut input_fields: Query<&mut IpInputField>,
     mut server_address: ResMut<ServerAddress>,
     mut keyboard_events: MessageReader<KeyboardInput>,
+    keyboard: Res<ButtonInput<KeyCode>>,
+    mut presets: ResMut<ServerPresets>,
 ) {
     let Some(mut field) = input_fields.iter_mut().find(|f| f.focused) else {
         return;
     };
-    
+
+    // Check for Ctrl modifier (for paste)
+    let ctrl_held = keyboard.pressed(KeyCode::ControlLeft) || keyboard.pressed(KeyCode::ControlRight);
+
     for event in keyboard_events.read() {
         if event.state != ButtonState::Pressed {
             continue;
         }
-        
+
         match &event.logical_key {
             Key::Backspace => {
                 // Remove last character from IP
                 if !server_address.ip.is_empty() {
                     server_address.ip.pop();
+                    // Deselect preset when editing manually
+                    presets.selected_index = None;
                 }
             }
             Key::Escape | Key::Enter => {
@@ -628,14 +636,37 @@ fn handle_ip_keyboard_input(
                 field.focused = false;
             }
             Key::Character(c) => {
+                let c_str = c.as_str();
+
+                // Handle Ctrl+V paste
+                if ctrl_held && (c_str == "v" || c_str == "V") {
+                    if let Ok(mut clipboard) = Clipboard::new() {
+                        if let Ok(text) = clipboard.get_text() {
+                            // Filter to valid IP/hostname characters and append
+                            for ch in text.chars() {
+                                if ch.is_ascii_alphanumeric() || ch == '.' || ch == '-' {
+                                    if server_address.ip.len() < 63 {
+                                        server_address.ip.push(ch);
+                                    }
+                                }
+                            }
+                            // Deselect preset when pasting
+                            presets.selected_index = None;
+                            info!("Pasted IP from clipboard: {}", server_address.ip);
+                        }
+                    }
+                    continue;
+                }
+
                 // Allow valid IP/hostname characters: alphanumeric, dots, dashes
-                let c = c.as_str();
-                if c.len() == 1 {
-                    let ch = c.chars().next().unwrap();
+                if c_str.len() == 1 {
+                    let ch = c_str.chars().next().unwrap();
                     if ch.is_ascii_alphanumeric() || ch == '.' || ch == '-' {
                         // Limit length to reasonable hostname
                         if server_address.ip.len() < 63 {
                             server_address.ip.push(ch);
+                            // Deselect preset when editing manually
+                            presets.selected_index = None;
                         }
                     }
                 }

@@ -32,6 +32,11 @@ pub const GROUND_SNAP_DISTANCE: f32 = 0.35;
 /// ~5.5 m/s gives a jump height of roughly 0.84m with GRAVITY=-18.
 pub const JUMP_VELOCITY: f32 = 7.5;
 
+/// Threshold for determining if a surface normal is "walkable".
+/// Surfaces with Y component of normal below this are considered too steep.
+/// 0.5 corresponds to approximately 60 degree slopes.
+pub const WALKABLE_THRESHOLD: f32 = 0.5;
+
 /// Minimum Y for the capsule center above ground.
 #[inline]
 pub fn ground_clearance_center() -> f32 {

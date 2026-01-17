@@ -9,6 +9,7 @@ use std::collections::{HashMap, HashSet};
 use shared::{
     npc::{NPC_HEIGHT, NPC_RADIUS},
     player::{PLAYER_HEIGHT, PLAYER_RADIUS, STEP_UP_HEIGHT},
+    physics::WALKABLE_THRESHOLD,
     vehicle_def, Vehicle, VehicleType,
     Health, InVehicle, Npc, NpcPosition, Player, PlayerPosition, PlayerVelocity, PropKind,
     VehicleState, WorldTerrain, ChunkCoord, PlacedBuilding, BuildingPosition,
@@ -864,10 +865,7 @@ pub struct SupportContact {
     pub support_normal: Vec3,
 }
 
-impl SupportContact {
-    /// Minimum normal.y to consider a surface walkable (~60 degree slope)
-    pub const WALKABLE_THRESHOLD: f32 = 0.5;
-}
+// WALKABLE_THRESHOLD is now imported from shared::physics
 
 fn resolve_capsule_vs_static(
     derived: &DerivedColliderLibrary,
@@ -926,7 +924,7 @@ fn resolve_capsule_vs_static(
                     inst.rotation,
                     inst.scale,
                 ) {
-                    if sphere_idx == 0 && normal.y > SupportContact::WALKABLE_THRESHOLD {
+                    if sphere_idx == 0 && normal.y > WALKABLE_THRESHOLD {
                         bottom_has_support = true;
                         if normal.y > bottom_support_normal.y {
                             bottom_support_normal = normal;
@@ -944,7 +942,7 @@ fn resolve_capsule_vs_static(
                 continue;
             }
 
-            let is_walkable_slope = best_normal.y > SupportContact::WALKABLE_THRESHOLD;
+            let is_walkable_slope = best_normal.y > WALKABLE_THRESHOLD;
             
             // Track support contacts: any bottom sphere walkable contact = grounded on static
             if bottom_has_support {
@@ -1261,7 +1259,7 @@ fn resolve_capsule_vs_structures(
                     inst.rotation,
                     inst.scale,
                 ) {
-                    if sphere_idx == 0 && normal.y > SupportContact::WALKABLE_THRESHOLD {
+                    if sphere_idx == 0 && normal.y > WALKABLE_THRESHOLD {
                         bottom_has_support = true;
                         if normal.y > bottom_support_normal.y {
                             bottom_support_normal = normal;
@@ -1279,7 +1277,7 @@ fn resolve_capsule_vs_structures(
                 continue;
             }
 
-            let is_walkable_slope = best_normal.y > SupportContact::WALKABLE_THRESHOLD;
+            let is_walkable_slope = best_normal.y > WALKABLE_THRESHOLD;
             
             // Track support contacts: any bottom sphere walkable contact = grounded on static
             if bottom_has_support {
@@ -1419,7 +1417,7 @@ fn resolve_capsule_vs_buildings(
                         building_rot,
                         building_scale,
                     ) {
-                        if sphere_idx == 0 && normal.y > SupportContact::WALKABLE_THRESHOLD {
+                        if sphere_idx == 0 && normal.y > WALKABLE_THRESHOLD {
                             bottom_has_support = true;
                             if normal.y > bottom_support_normal.y {
                                 bottom_support_normal = normal;
@@ -1437,7 +1435,7 @@ fn resolve_capsule_vs_buildings(
                     continue;
                 }
 
-                let is_walkable_slope = best_normal.y > SupportContact::WALKABLE_THRESHOLD;
+                let is_walkable_slope = best_normal.y > WALKABLE_THRESHOLD;
 
                 if bottom_has_support {
                     support.has_support = true;
@@ -1543,7 +1541,7 @@ fn resolve_capsule_vs_buildings(
                         building_rot,
                         building_scale,
                     ) {
-                        if sphere_idx == 0 && normal.y > SupportContact::WALKABLE_THRESHOLD {
+                        if sphere_idx == 0 && normal.y > WALKABLE_THRESHOLD {
                             bottom_has_support = true;
                             if normal.y > bottom_support_normal.y {
                                 bottom_support_normal = normal;
@@ -1561,7 +1559,7 @@ fn resolve_capsule_vs_buildings(
                     continue;
                 }
 
-                let is_walkable_slope = best_normal.y > SupportContact::WALKABLE_THRESHOLD;
+                let is_walkable_slope = best_normal.y > WALKABLE_THRESHOLD;
 
                 if bottom_has_support {
                     support.has_support = true;

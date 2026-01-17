@@ -43,6 +43,27 @@ impl Default for GraphicsSettings {
 }
 
 // =============================================================================
+// INPUT SETTINGS RESOURCE
+// =============================================================================
+
+/// Runtime-adjustable input settings for player controls.
+/// Players can adjust these in the pause menu under Controls.
+#[derive(Resource, Clone)]
+pub struct InputSettings {
+    /// Mouse sensitivity multiplier. Range: 0.1-3.0. Default: 1.0.
+    /// Applied as a multiplier to the base MOUSE_SENSITIVITY constant.
+    pub mouse_sensitivity: f32,
+}
+
+impl Default for InputSettings {
+    fn default() -> Self {
+        Self {
+            mouse_sensitivity: 1.0,
+        }
+    }
+}
+
+// =============================================================================
 // COMPONENTS
 // =============================================================================
 

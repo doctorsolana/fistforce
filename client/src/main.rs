@@ -155,6 +155,9 @@ fn main() {
     // Graphics settings (toggleable from pause menu)
     app.init_resource::<systems::GraphicsSettings>();
 
+    // Input settings (controls, sensitivity - adjustable from pause menu)
+    app.init_resource::<systems::InputSettings>();
+
     // Ensure we clean up visuals when entering menu
     app.add_systems(OnEnter(GameState::MainMenu), systems::enter_main_menu);
 

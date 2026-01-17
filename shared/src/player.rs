@@ -17,3 +17,9 @@ pub const MOUSE_SENSITIVITY: f32 = 0.003;
 
 /// Spawn position for new players (spawn above terrain to prevent clipping)
 pub const SPAWN_POSITION: [f32; 3] = [0.0, 10.0, 0.0];
+
+/// Maximum player health
+pub const PLAYER_MAX_HEALTH: f32 = 100.0;
+
+/// Time in seconds before a dead player can respawn
+pub const RESPAWN_TIME: f32 = 4.0;

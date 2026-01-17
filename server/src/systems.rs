@@ -11,7 +11,7 @@ use shared::{
     ground_clearance_center, step_character, step_vehicle_physics, step_car_physics, can_interact_with_vehicle,
     CarSuspensionState, Player, PlayerInput, PlayerPosition, PlayerRotation, PlayerVelocity, PlayerGrounded,
     Vehicle, VehicleState, VehicleDriver, VehicleInput, InVehicle, VehicleType,
-    WorldTerrain, FIXED_TIMESTEP_HZ, SPAWN_POSITION,
+    WorldTerrain, FIXED_TIMESTEP_HZ, SPAWN_POSITION, RESPAWN_TIME,
     Health, EquippedWeapon, WeaponType,
     Inventory, HotbarSelection,
     PlayerProfile, SubmitPlayerName, NameSubmissionResult, NameRejectionReason,
@@ -20,9 +20,6 @@ use shared::{
 
 use crate::inventory::PreviousHotbarSlot;
 use crate::persistence::PlayerProfiles;
-
-/// How long to wait before respawning (seconds)
-const RESPAWN_TIME: f32 = 4.0;
 
 /// Component added to dead players while waiting to respawn
 #[derive(Component)]

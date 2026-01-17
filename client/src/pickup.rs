@@ -2,9 +2,11 @@
 //!
 //! Shows a prompt when near items and sends PickupRequest to server.
 //! Also handles 3D visuals for ground items with bobbing animation.
+//! Additionally handles vehicle interaction prompts ("Press E to get on bike").
 
 use bevy::prelude::*;
-use shared::{GroundItem, GroundItemPosition, LocalPlayer, PlayerPosition, PickupRequest, ReliableChannel, ItemType};
+use shared::{GroundItem, GroundItemPosition, LocalPlayer, PlayerPosition, PickupRequest, ReliableChannel, ItemType, PICKUP_RANGE, VEHICLE_INTERACTION_RANGE};
+use shared::{Vehicle, VehicleState, VehicleDriver, VehicleType};
 use lightyear::prelude::*;
 use lightyear::prelude::client::Connected;
 
@@ -17,31 +19,35 @@ pub struct PickupPlugin;
 impl Plugin for PickupPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<NearbyItem>();
-        
+        app.init_resource::<NearbyVehicle>();
+
         // Visual systems run in both Playing and Paused states (so items don't disappear when pausing)
         app.add_systems(Update, (
             spawn_ground_item_visuals,
             animate_ground_items,
             despawn_ground_item_visuals,
         ).chain().run_if(in_state(GameState::Playing).or(in_state(GameState::Paused))));
-        
+
         // Pickup interaction only in Playing state
         app.add_systems(Update, (
             detect_nearby_items,
             show_pickup_prompt,
             handle_pickup_input,
         ).chain().run_if(in_state(GameState::Playing)));
-        
+
+        // Vehicle interaction prompt only in Playing state
+        app.add_systems(Update, (
+            detect_nearby_vehicles,
+            show_vehicle_prompt,
+        ).chain().run_if(in_state(GameState::Playing)));
+
         // Cleanup prompt when leaving Playing (but NOT item visuals - they persist through pause)
         app.add_systems(OnExit(GameState::Playing), cleanup_pickup_ui);
-        
+
         // Only cleanup item visuals when returning to main menu (actual disconnect)
         app.add_systems(OnEnter(GameState::MainMenu), cleanup_item_visuals);
     }
 }
-
-/// Distance within which items can be picked up
-const PICKUP_RANGE: f32 = 3.0;
 
 /// Resource tracking the nearest item to the player
 #[derive(Resource, Default)]
@@ -54,6 +60,117 @@ pub struct NearbyItem {
 /// Marker for the pickup prompt UI
 #[derive(Component)]
 pub struct PickupPrompt;
+
+// =============================================================================
+// VEHICLE INTERACTION PROMPT
+// =============================================================================
+
+// VEHICLE_INTERACTION_RANGE is now imported from shared
+
+/// Resource tracking the nearest vehicle to the player
+#[derive(Resource, Default)]
+pub struct NearbyVehicle {
+    pub entity: Option<Entity>,
+    pub vehicle_type: Option<VehicleType>,
+}
+
+/// Marker for the vehicle interaction prompt UI
+#[derive(Component)]
+pub struct VehiclePrompt;
+
+/// Detect the nearest vehicle to the local player (for mounting)
+fn detect_nearby_vehicles(
+    mut nearby: ResMut<NearbyVehicle>,
+    local_player: Query<&PlayerPosition, With<LocalPlayer>>,
+    vehicles: Query<(Entity, &Vehicle, &VehicleState, &VehicleDriver)>,
+    input_state: Res<InputState>,
+) {
+    // Don't show prompt if already in vehicle or dead
+    if input_state.in_vehicle || input_state.is_dead {
+        *nearby = NearbyVehicle::default();
+        return;
+    }
+
+    let Ok(player_pos) = local_player.single() else {
+        *nearby = NearbyVehicle::default();
+        return;
+    };
+
+    // Find the nearest unoccupied vehicle within range
+    let mut closest: Option<(Entity, VehicleType, f32)> = None;
+
+    for (entity, vehicle, state, driver) in vehicles.iter() {
+        // Skip if vehicle already has a driver
+        if driver.driver_id.is_some() {
+            continue;
+        }
+
+        let distance = player_pos.0.distance(state.position);
+        if distance <= VEHICLE_INTERACTION_RANGE {
+            if closest.is_none() || distance < closest.as_ref().unwrap().2 {
+                closest = Some((entity, vehicle.vehicle_type, distance));
+            }
+        }
+    }
+
+    if let Some((entity, vehicle_type, _distance)) = closest {
+        *nearby = NearbyVehicle {
+            entity: Some(entity),
+            vehicle_type: Some(vehicle_type),
+        };
+    } else {
+        *nearby = NearbyVehicle::default();
+    }
+}
+
+/// Show vehicle interaction prompt when near an unoccupied vehicle
+fn show_vehicle_prompt(
+    mut commands: Commands,
+    nearby: Res<NearbyVehicle>,
+    existing_prompt: Query<Entity, With<VehiclePrompt>>,
+    mut text_query: Query<&mut Text, With<VehiclePrompt>>,
+) {
+    // If we have a nearby vehicle, show/update prompt
+    if let Some(vehicle_type) = nearby.vehicle_type {
+        let vehicle_name = match vehicle_type {
+            VehicleType::Motorbike => "bike",
+            VehicleType::Car => "car",
+        };
+        let prompt_text = format!("Press E to get on {}", vehicle_name);
+
+        // Update existing prompt or spawn new one
+        if let Ok(mut text) = text_query.single_mut() {
+            **text = prompt_text;
+        } else if existing_prompt.is_empty() {
+            // Spawn new prompt (positioned above the pickup prompt location)
+            commands.spawn((
+                VehiclePrompt,
+                Text::new(prompt_text),
+                TextFont {
+                    font_size: 20.0,
+                    ..default()
+                },
+                TextColor(Color::srgba(1.0, 0.9, 0.5, 0.95)), // Slightly yellow tint
+                Node {
+                    position_type: PositionType::Absolute,
+                    bottom: Val::Percent(28.0), // Slightly above pickup prompt
+                    left: Val::Percent(50.0),
+                    ..default()
+                },
+                TextLayout::new_with_justify(Justify::Center),
+            ));
+        }
+    } else {
+        // No vehicle nearby, despawn prompt
+        for entity in existing_prompt.iter() {
+            commands.entity(entity).despawn();
+        }
+    }
+}
+
+// =============================================================================
+// ITEM PICKUP DETECTION
+// =============================================================================
 
 /// Detect the nearest ground item to the local player
 fn detect_nearby_items(
@@ -160,12 +277,16 @@ fn handle_pickup_input(
     }
 }
 
-/// Cleanup pickup UI when leaving playing state
+/// Cleanup pickup and vehicle prompt UI when leaving playing state
 fn cleanup_pickup_ui(
     mut commands: Commands,
-    prompts: Query<Entity, With<PickupPrompt>>,
+    pickup_prompts: Query<Entity, With<PickupPrompt>>,
+    vehicle_prompts: Query<Entity, With<VehiclePrompt>>,
 ) {
-    for entity in prompts.iter() {
+    for entity in pickup_prompts.iter() {
+        commands.entity(entity).despawn();
+    }
+    for entity in vehicle_prompts.iter() {
         commands.entity(entity).despawn();
     }
 }

@@ -135,14 +135,20 @@ pub enum NpcMovementAnim {
     StrafeRight,
 }
 
-/// Duration for crossfade blending between animations
-const NPC_ANIM_BLEND_DURATION: f32 = 0.2;
+/// Duration for crossfade blending between animations (normal transitions)
+const NPC_ANIM_BLEND_DURATION: f32 = 0.15;
+
+/// Faster blend duration for stopping (walk/run -> idle)
+const NPC_STOP_BLEND_DURATION: f32 = 0.08;
 
 /// Speed smoothing factor (lower = smoother but slower response)
-const NPC_SPEED_SMOOTHING: f32 = 8.0;
+const NPC_SPEED_SMOOTHING: f32 = 12.0;
 
 /// Hysteresis margins to prevent animation flip-flopping at thresholds
 const HYSTERESIS_MARGIN: f32 = 0.3;
+
+/// Threshold for instant stop detection (bypasses smoothing)
+const INSTANT_STOP_THRESHOLD: f32 = 0.05;
 
 /// Tracks NPC animation state with blending support
 #[derive(Component, Default)]
@@ -161,6 +167,8 @@ pub struct NpcAnimState {
     pub last_pos: Vec3,
     /// Smoothed speed (exponential moving average to prevent jitter)
     pub smoothed_speed: f32,
+    /// True if current transition is a stop (walk/run -> idle), uses faster blend
+    pub is_stopping: bool,
 }
 
 /// Add render components and spawn the visual model when an NPC replicates in.
@@ -444,9 +452,19 @@ pub fn update_npc_animation(
             0.0
         };
 
-        // Exponential moving average for smooth speed (prevents jittery animation switching)
-        let smooth_factor = 1.0 - (-NPC_SPEED_SMOOTHING * dt).exp();
-        state.smoothed_speed = state.smoothed_speed + (instant_speed - state.smoothed_speed) * smooth_factor;
+        // Detect instant stops: if instant speed is very low and we're moving, snap to idle immediately
+        // This bypasses the smoothing delay for responsive stop detection
+        let is_instant_stop = instant_speed < INSTANT_STOP_THRESHOLD
+            && matches!(state.target_anim, NpcMovementAnim::Walk | NpcMovementAnim::Run);
+
+        // For instant stops, reset smoothed speed immediately to trigger idle transition
+        if is_instant_stop {
+            state.smoothed_speed = 0.0;
+        } else {
+            // Normal exponential moving average for smooth speed (prevents jittery animation switching)
+            let smooth_factor = 1.0 - (-NPC_SPEED_SMOOTHING * dt).exp();
+            state.smoothed_speed = state.smoothed_speed + (instant_speed - state.smoothed_speed) * smooth_factor;
+        }
 
         // Use smoothed speed with hysteresis for stable animation selection
         let target_anim = determine_npc_target_anim(state.smoothed_speed, state.target_anim);
@@ -460,6 +478,11 @@ pub fn update_npc_animation(
                 state.current_anim = state.target_anim;
             }
 
+            // Check if this is a stopping transition (moving -> idle)
+            let was_moving = matches!(state.target_anim, NpcMovementAnim::Walk | NpcMovementAnim::Run);
+            let going_idle = matches!(target_anim, NpcMovementAnim::Idle);
+            state.is_stopping = was_moving && going_idle;
+
             // Start new transition
             state.target_anim = target_anim;
             state.blend_progress = 0.0;
@@ -469,9 +492,14 @@ pub fn update_npc_animation(
             player.start(target_node).repeat().set_weight(0.0);
         }
 
-        // Update blend progress
+        // Update blend progress (faster for stopping transitions)
         if state.blend_progress < 1.0 {
-            state.blend_progress = (state.blend_progress + dt / NPC_ANIM_BLEND_DURATION).min(1.0);
+            let blend_duration = if state.is_stopping {
+                NPC_STOP_BLEND_DURATION
+            } else {
+                NPC_ANIM_BLEND_DURATION
+            };
+            state.blend_progress = (state.blend_progress + dt / blend_duration).min(1.0);
 
             let current_node = npc_movement_anim_to_node(state.current_anim, &assets);
             let target_node = npc_movement_anim_to_node(state.target_anim, &assets);

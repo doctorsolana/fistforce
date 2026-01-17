@@ -4,7 +4,7 @@
 
 use bevy::prelude::*;
 use bevy::window::{CursorGrabMode, CursorOptions, PrimaryWindow};
-use shared::{ChestStorage, ChestPosition, LocalPlayer, PlayerPosition, OpenChestRequest, CloseChestRequest, ReliableChannel};
+use shared::{ChestStorage, ChestPosition, LocalPlayer, PlayerPosition, OpenChestRequest, CloseChestRequest, ReliableChannel, CHEST_RANGE};
 use lightyear::prelude::*;
 use lightyear::prelude::client::Connected;
 
@@ -39,9 +39,6 @@ impl Plugin for ChestPlugin {
         app.add_systems(OnEnter(GameState::MainMenu), cleanup_chest_visuals);
     }
 }
-
-/// Distance within which chests can be interacted with
-const CHEST_RANGE: f32 = 3.5;
 
 /// Resource tracking the nearest chest to the player
 #[derive(Resource, Default)]

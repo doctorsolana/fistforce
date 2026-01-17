@@ -29,3 +29,10 @@ server_data/
 # Environment
 .env
 .env.local
+
+# Local cargo config (machine-specific linker paths)
+.cargo/
+
+# Windows cross-compilation (WSL-specific)
+windows_build/
+BUILD_WINDOWS.md

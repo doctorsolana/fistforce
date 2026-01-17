@@ -9,6 +9,7 @@ use shared::{Health, InputChannel, PlayerInput, VehicleInput, VehicleDriver, Loc
 use std::f32::consts::FRAC_PI_2;
 
 use crate::states::GameState;
+use crate::systems::InputSettings;
 
 /// Camera view mode
 #[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
@@ -128,13 +129,14 @@ pub fn handle_mouse_input(
     mut mouse_motion: MessageReader<MouseMotion>,
     mouse_button: Res<ButtonInput<MouseButton>>,
     mut input_state: ResMut<InputState>,
+    input_settings: Res<InputSettings>,
 ) {
     // Skip mouse look if inventory is open (but still consume events)
     if input_state.inventory_open {
         for _ in mouse_motion.read() {}
         return;
     }
-    
+
     // Track ADS (right-click to toggle, not hold)
     if mouse_button.just_pressed(MouseButton::Right) && !input_state.in_vehicle {
         input_state.aiming = !input_state.aiming;
@@ -143,20 +145,20 @@ pub fn handle_mouse_input(
     if input_state.in_vehicle {
         input_state.aiming = false;
     }
-    
+
     let mut delta = Vec2::ZERO;
     for motion in mouse_motion.read() {
         delta += motion.delta;
     }
 
     if delta != Vec2::ZERO {
-        // Reduce sensitivity when aiming for more precise control
+        // Apply user's sensitivity multiplier, and reduce when aiming for more precise control
         let sensitivity = if input_state.aiming {
-            MOUSE_SENSITIVITY * 0.5
+            MOUSE_SENSITIVITY * input_settings.mouse_sensitivity * 0.5
         } else {
-            MOUSE_SENSITIVITY
+            MOUSE_SENSITIVITY * input_settings.mouse_sensitivity
         };
-        
+
         if input_state.in_vehicle {
             // In vehicle: update relative look angles
             input_state.vehicle_look_yaw -= delta.x * sensitivity;

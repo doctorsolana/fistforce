@@ -14,14 +14,10 @@ use shared::{
     NpcRotation, NpcDamageEvent, WorldTerrain, FIXED_TIMESTEP_HZ, Health,
     PlacedBuilding, BuildingPosition,
     SpatialObstacleGrid, ObstacleEntry,
+    // NPC constants from shared
+    npc_max_health, NPC_MOVE_SPEED, NPC_TURN_SPEED, NPC_WANDER_RADIUS,
+    NPC_IDLE_TIME_MIN, NPC_IDLE_TIME_MAX, NPC_MIN_TARGET_DIST, DEAD_NPC_DESPAWN_TIME,
 };
-
-// =============================================================================
-// CONSTANTS
-// =============================================================================
-
-/// Time in seconds before a dead NPC despawns (5 minutes)
-const DEAD_NPC_DESPAWN_TIME: f32 = 5.0 * 60.0;
 
 // =============================================================================
 // SPATIAL GRID (obstacle caching for O(1) lookups)
@@ -115,7 +111,7 @@ pub fn spawn_npcs_once(
             },
             NpcPosition(pos),
             NpcRotation(0.0),
-            Health::new(120.0),
+            Health::new(npc_max_health(NpcArchetype::Barbarian)),
             NpcWander::new(pos, 18.0, npc_id),
             Replicate::new(ReplicationMode::SingleServer(NetworkTarget::All)),
         ));
@@ -132,7 +128,7 @@ pub fn spawn_npcs_once(
         },
         NpcPosition(knight_pos),
         NpcRotation(0.0),
-        Health::new(200.0),
+        Health::new(npc_max_health(NpcArchetype::Knight)),
         NpcWander::new(knight_pos, 8.0, 100), // Smaller wander radius for dialogue NPCs
         Replicate::new(ReplicationMode::SingleServer(NetworkTarget::All)),
     ));
@@ -147,7 +143,7 @@ pub fn spawn_npcs_once(
         },
         NpcPosition(rogue_pos),
         NpcRotation(0.0),
-        Health::new(80.0),
+        Health::new(npc_max_health(NpcArchetype::RogueHooded)),
         NpcWander::new(rogue_pos, 10.0, 101),
         Replicate::new(ReplicationMode::SingleServer(NetworkTarget::All)),
     ));
@@ -187,7 +183,7 @@ pub fn spawn_medieval_town_npcs(
             },
             NpcPosition(pos),
             NpcRotation(if i == 0 { std::f32::consts::PI } else { 0.0 }), // Face center
-            Health::new(200.0),
+            Health::new(npc_max_health(NpcArchetype::Knight)),
             NpcWander::new(pos, 12.0, npc_id), // Small wander radius for dialogue NPCs
             Replicate::new(ReplicationMode::SingleServer(NetworkTarget::All)),
         ));
@@ -226,7 +222,7 @@ pub fn spawn_medieval_town_npcs(
                 },
                 NpcPosition(pos),
                 NpcRotation(rng.next_f32() * std::f32::consts::TAU),
-                Health::new(80.0),
+                Health::new(npc_max_health(NpcArchetype::RogueHooded)),
                 NpcWander::new(pos, 20.0, npc_id), // Medium wander radius
                 Replicate::new(ReplicationMode::SingleServer(NetworkTarget::All)),
             ));
@@ -251,7 +247,7 @@ pub fn spawn_medieval_town_npcs(
             },
             NpcPosition(pos),
             NpcRotation(rng.next_f32() * std::f32::consts::TAU),
-            Health::new(80.0),
+            Health::new(npc_max_health(NpcArchetype::RogueHooded)),
             NpcWander::new(pos, 25.0, npc_id),
             Replicate::new(ReplicationMode::SingleServer(NetworkTarget::All)),
         ));
@@ -285,7 +281,7 @@ pub fn spawn_medieval_town_npcs(
                 },
                 NpcPosition(pos),
                 NpcRotation(rng.next_f32() * std::f32::consts::TAU),
-                Health::new(120.0),
+                Health::new(npc_max_health(NpcArchetype::Barbarian)),
                 NpcWander::new(pos, 15.0, npc_id),
                 Replicate::new(ReplicationMode::SingleServer(NetworkTarget::All)),
             ));
@@ -328,7 +324,7 @@ pub fn spawn_medieval_town_npcs(
             },
             NpcPosition(pos),
             NpcRotation(rng.next_f32() * std::f32::consts::TAU),
-            Health::new(120.0),
+            Health::new(npc_max_health(NpcArchetype::Barbarian)),
             NpcWander::new(pos, 12.0, npc_id),
             Replicate::new(ReplicationMode::SingleServer(NetworkTarget::All)),
         ));
@@ -345,11 +341,8 @@ pub fn spawn_medieval_town_npcs(
 // AI / PATHFINDING
 // =============================================================================
 
-const NPC_MOVE_SPEED: f32 = 3.5; // m/s
-const NPC_IDLE_TIME_MIN: f32 = 1.5; // seconds to idle after reaching a target
-const NPC_IDLE_TIME_MAX: f32 = 4.0;
-const NPC_MIN_TARGET_DIST: f32 = 15.0; // minimum distance for a new wander target
-const NPC_WANDER_RADIUS: f32 = 60.0; // how far NPCs can wander from home
+// NPC movement constants are now in shared/src/npc.rs:
+// NPC_MOVE_SPEED, NPC_TURN_SPEED, NPC_WANDER_RADIUS, NPC_IDLE_TIME_MIN/MAX, NPC_MIN_TARGET_DIST
 
 const GRID_CELL_SIZE: f32 = 2.0; // meters
 const GRID_MAX_STEP: f32 = 1.2; // max height delta allowed between neighbor cells
@@ -555,6 +548,29 @@ fn tick_idle_state(
     }
 }
 
+/// Smoothly rotate current angle toward target angle at a given speed.
+/// Returns the new angle after rotation.
+fn smooth_rotate_toward(current: f32, target: f32, turn_speed: f32, dt: f32) -> f32 {
+    use std::f32::consts::PI;
+
+    // Normalize angle difference to [-PI, PI]
+    let mut diff = target - current;
+    while diff > PI {
+        diff -= 2.0 * PI;
+    }
+    while diff < -PI {
+        diff += 2.0 * PI;
+    }
+
+    // Turn at most turn_speed * dt radians this frame
+    let max_turn = turn_speed * dt;
+    if diff.abs() <= max_turn {
+        target
+    } else {
+        current + diff.signum() * max_turn
+    }
+}
+
 /// Tick walking state: follow path, handle waypoints, add variety
 fn tick_walking_state(
     wander: &mut NpcWander,
@@ -610,10 +626,23 @@ fn tick_walking_state(
         return;
     }
 
-    // Move toward waypoint
+    // Calculate target facing direction
     let dir_xz = Vec2::new(to.x, to.z).normalize_or_zero();
+    let target_yaw = (-dir_xz.x).atan2(-dir_xz.y);
+
+    // Smoothly rotate toward movement direction
+    rot.0 = smooth_rotate_toward(rot.0, target_yaw, NPC_TURN_SPEED, dt);
+
+    // Move toward waypoint (in the direction we're facing, not the target direction)
+    // This makes NPCs turn before walking in a new direction, which looks more natural
+    let facing_dir = Vec2::new(-rot.0.sin(), -rot.0.cos());
     let speed = NPC_MOVE_SPEED * wander.current_speed_multiplier;
-    let step = Vec3::new(dir_xz.x, 0.0, dir_xz.y) * (speed * dt);
+
+    // Only move at full speed if facing roughly the right direction (within ~60 degrees)
+    let alignment = dir_xz.dot(facing_dir);
+    let move_factor = alignment.max(0.0); // Don't walk backwards
+
+    let step = Vec3::new(facing_dir.x, 0.0, facing_dir.y) * (speed * move_factor * dt);
 
     pos.0.x += step.x;
     pos.0.z += step.z;
@@ -621,9 +650,6 @@ fn tick_walking_state(
     // Stay glued to heightfield
     let ground_y = terrain.get_height(pos.0.x, pos.0.z);
     pos.0.y = ground_y + ground_clearance_center();
-
-    // Face movement direction
-    rot.0 = (-dir_xz.x).atan2(-dir_xz.y);
 }
 
 /// Tick fleeing state: run away from threat, decrease timer
@@ -704,18 +730,29 @@ fn tick_fleeing_state(
         return;
     }
 
-    // Move faster while fleeing
+    // Calculate target facing direction
     let dir_xz = Vec2::new(to.x, to.z).normalize_or_zero();
+    let target_yaw = (-dir_xz.x).atan2(-dir_xz.y);
+
+    // Smoothly rotate toward flee direction (faster turn speed when panicking)
+    let panic_turn_speed = NPC_TURN_SPEED * 1.5;
+    rot.0 = smooth_rotate_toward(rot.0, target_yaw, panic_turn_speed, dt);
+
+    // Move in the direction we're facing
+    let facing_dir = Vec2::new(-rot.0.sin(), -rot.0.cos());
     let flee_speed = NPC_MOVE_SPEED * panic_speed_boost;
-    let step = Vec3::new(dir_xz.x, 0.0, dir_xz.y) * (flee_speed * dt);
+
+    // Only move at full speed if facing roughly the right direction
+    let alignment = dir_xz.dot(facing_dir);
+    let move_factor = alignment.max(0.0);
+
+    let step = Vec3::new(facing_dir.x, 0.0, facing_dir.y) * (flee_speed * move_factor * dt);
 
     pos.0.x += step.x;
     pos.0.z += step.z;
 
     let ground_y = terrain.get_height(pos.0.x, pos.0.z);
     pos.0.y = ground_y + ground_clearance_center();
-
-    rot.0 = (-dir_xz.x).atan2(-dir_xz.y);
 
     // Update flee timer in state
     wander.state = NpcState::Fleeing {
